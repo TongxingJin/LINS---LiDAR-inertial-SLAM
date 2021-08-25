@@ -178,11 +178,11 @@ class ImageProjection {
 
   void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg) {
     TicToc ts_total;
-    copyPointCloud(laserCloudMsg);
-    findStartEndAngle();
-    projectPointCloud();
-    groundRemoval();
-    cloudSegmentation();
+    copyPointCloud(laserCloudMsg);// 转成pcl点云，去除NaN
+    findStartEndAngle();// 计算起止角度和角度范围
+    projectPointCloud();// 投影到有序的image中，并记录点的行列和深度
+    groundRemoval();// 确定属于地面的pixel，不用参与聚类
+    cloudSegmentation();// 非地面点的聚类，聚类点和地面点以线为单位重新组织成紧凑的形式
     publishCloud();
     resetParameters();
     double time_total = ts_total.toc();
@@ -217,12 +217,12 @@ class ImageProjection {
       verticalAngle = atan2(thisPoint.z, sqrt(thisPoint.x * thisPoint.x +
                                               thisPoint.y * thisPoint.y)) *
                       180 / M_PI;
-      rowIdn = (verticalAngle + ang_bottom) / ang_res_y;
+      rowIdn = (verticalAngle + ang_bottom) / ang_res_y;// ang_bottom为垂直角度范围的一半
       if (rowIdn < 0 || rowIdn >= LINE_NUM) continue;
 
       horizonAngle = atan2(thisPoint.x, thisPoint.y) * 180 / M_PI;
 
-      columnIdn = -round((horizonAngle - 90.0) / ang_res_x) + SCAN_NUM / 2;
+      columnIdn = -round((horizonAngle - 90.0) / ang_res_x) + SCAN_NUM / 2;// 从x轴负方向逆时针分别为0~SCAN_NUM-1
       if (columnIdn >= SCAN_NUM) columnIdn -= SCAN_NUM;
 
       if (columnIdn < 0 || columnIdn >= SCAN_NUM) continue;
@@ -249,6 +249,7 @@ class ImageProjection {
         lowerInd = j + (i)*SCAN_NUM;
         upperInd = j + (i + 1) * SCAN_NUM;
 
+        // 遇到没有点的pixel
         if (fullCloud->points[lowerInd].intensity == -1 ||
             fullCloud->points[upperInd].intensity == -1) {
           groundMat.at<int8_t>(i, j) = -1;
@@ -261,7 +262,7 @@ class ImageProjection {
 
         angle = atan2(diffZ, sqrt(diffX * diffX + diffY * diffY)) * 180 / M_PI;
 
-        if (abs(angle - sensorMountAngle) <= 10) {
+        if (abs(angle - sensorMountAngle) <= 10) { // 减掉雷达水平面与地面的夹脚
           groundMat.at<int8_t>(i, j) = 1;
           groundMat.at<int8_t>(i + 1, j) = 1;
         }
@@ -272,7 +273,7 @@ class ImageProjection {
       for (size_t j = 0; j < SCAN_NUM; ++j) {
         if (groundMat.at<int8_t>(i, j) == 1 ||
             rangeMat.at<float>(i, j) == FLT_MAX) {
-          labelMat.at<int>(i, j) = -1;
+          labelMat.at<int>(i, j) = -1;// 无效pixel和地面不会再参与聚类
         }
       }
     }
@@ -289,14 +290,14 @@ class ImageProjection {
   void cloudSegmentation() {
     for (size_t i = 0; i < LINE_NUM; ++i)
       for (size_t j = 0; j < SCAN_NUM; ++j)
-        if (labelMat.at<int>(i, j) == 0) labelComponents(i, j);
+        if (labelMat.at<int>(i, j) == 0) labelComponents(i, j);// 广度优先搜索聚类，将label信息标注在labelMat中
 
     int sizeOfSegCloud = 0;
     for (size_t i = 0; i < LINE_NUM; ++i) {
-      segMsg.startRingIndex[i] = sizeOfSegCloud - 1 + 5;
+      segMsg.startRingIndex[i] = sizeOfSegCloud - 1 + 5;// 记录每线在fullCloud中的起始索引
 
       for (size_t j = 0; j < SCAN_NUM; ++j) {
-        if (labelMat.at<int>(i, j) > 0 || groundMat.at<int8_t>(i, j) == 1) {
+        if (labelMat.at<int>(i, j) > 0 || groundMat.at<int8_t>(i, j) == 1) { // 地面或者聚类点
           if (labelMat.at<int>(i, j) == 999999) {
             if (i > groundScanInd && j % 5 == 0) {
               outlierCloud->push_back(fullCloud->points[j + i * SCAN_NUM]);
@@ -305,14 +306,17 @@ class ImageProjection {
               continue;
             }
           }
+          // 如果是地面，连接处不计，且等角度降采样
           if (groundMat.at<int8_t>(i, j) == 1) {
             if (j % 5 != 0 && j > 5 && j < SCAN_NUM - 5) continue;
           }
+          // 是否为地面
           segMsg.segmentedCloudGroundFlag[sizeOfSegCloud] =
               (groundMat.at<int8_t>(i, j) == 1);
+          // 列
           segMsg.segmentedCloudColInd[sizeOfSegCloud] = j;
           segMsg.segmentedCloudRange[sizeOfSegCloud] = rangeMat.at<float>(i, j);
-          segmentedCloud->push_back(fullCloud->points[j + i * SCAN_NUM]);
+          segmentedCloud->push_back(fullCloud->points[j + i * SCAN_NUM]);// 重新组织成紧凑的点云形式
           ++sizeOfSegCloud;
         }
       }
@@ -340,20 +344,20 @@ class ImageProjection {
 
     queueIndX[0] = row;
     queueIndY[0] = col;
-    int queueSize = 1;
-    int queueStartInd = 0;
-    int queueEndInd = 1;
+    int queueSize = 1;// 没有检查的剩余长度
+    int queueStartInd = 0;// 没有检查的起始索引
+    int queueEndInd = 1;// 新的空位置
 
     allPushedIndX[0] = row;
     allPushedIndY[0] = col;
-    int allPushedIndSize = 1;
+    int allPushedIndSize = 1;// 总共的点数
 
     while (queueSize > 0) {
       fromIndX = queueIndX[queueStartInd];
       fromIndY = queueIndY[queueStartInd];
       --queueSize;
       ++queueStartInd;
-      labelMat.at<int>(fromIndX, fromIndY) = labelCount;
+      labelMat.at<int>(fromIndX, fromIndY) = labelCount;// label
 
       for (auto iter = neighborIterator.begin(); iter != neighborIterator.end();
            ++iter) {
@@ -362,31 +366,31 @@ class ImageProjection {
 
         if (thisIndX < 0 || thisIndX >= LINE_NUM) continue;
 
-        if (thisIndY < 0) thisIndY = SCAN_NUM - 1;
+        if (thisIndY < 0) thisIndY = SCAN_NUM - 1;// 列是循环的
         if (thisIndY >= SCAN_NUM) thisIndY = 0;
 
-        if (labelMat.at<int>(thisIndX, thisIndY) != 0) continue;
+        if (labelMat.at<int>(thisIndX, thisIndY) != 0) continue;// 地面点和无效点不参与聚类
 
         d1 = std::max(rangeMat.at<float>(fromIndX, fromIndY),
                       rangeMat.at<float>(thisIndX, thisIndY));
         d2 = std::min(rangeMat.at<float>(fromIndX, fromIndY),
                       rangeMat.at<float>(thisIndX, thisIndY));
 
-        if ((*iter).first == 0)
+        if ((*iter).first == 0) // 同一行
           alpha = segmentAlphaX;
         else
           alpha = segmentAlphaY;
 
         angle = atan2(d2 * sin(alpha), (d1 - d2 * cos(alpha)));
 
-        if (angle > segmentTheta) {
+        if (angle > segmentTheta) { // 角度比较大，说明是比较连续的面，入射角可以很大
           queueIndX[queueEndInd] = thisIndX;
           queueIndY[queueEndInd] = thisIndY;
           ++queueSize;
           ++queueEndInd;
 
-          labelMat.at<int>(thisIndX, thisIndY) = labelCount;
-          lineCountFlag[thisIndX] = true;
+          labelMat.at<int>(thisIndX, thisIndY) = labelCount;// 标注上label
+          lineCountFlag[thisIndX] = true;// 占用了一条线
 
           allPushedIndX[allPushedIndSize] = thisIndX;
           allPushedIndY[allPushedIndSize] = thisIndY;
@@ -395,6 +399,7 @@ class ImageProjection {
       }
     }
 
+    // 总点数比较多，或者占的线数比较多
     bool feasibleSegment = false;
     if (allPushedIndSize >= 30)
       feasibleSegment = true;
@@ -405,11 +410,12 @@ class ImageProjection {
       if (lineCount >= segmentValidLineNum) feasibleSegment = true;
     }
 
+    // 为下次做准备
     if (feasibleSegment == true) {
       ++labelCount;
     } else {
       for (size_t i = 0; i < allPushedIndSize; ++i) {
-        labelMat.at<int>(allPushedIndX[i], allPushedIndY[i]) = 999999;
+        labelMat.at<int>(allPushedIndX[i], allPushedIndY[i]) = 999999;// 不符合要求的label被修改成9999999
       }
     }
   }
@@ -451,7 +457,7 @@ class ImageProjection {
       pubSegmentedCloudPure.publish(laserCloudTemp);
     }
 
-    if (pubFullInfoCloud.getNumSubscribers() != 0) {
+    if (pubFullInfoCloud.getNumSubscribers() != 0) { // 只在intensity保存了range
       pcl::toROSMsg(*fullInfoCloud, laserCloudTemp);
       laserCloudTemp.header.stamp = cloudHeader.stamp;
       laserCloudTemp.header.frame_id = "base_link";
@@ -466,7 +472,10 @@ int main(int argc, char** argv) {
   ros::NodeHandle pnh("~");
 
 
-  parameter::readParameters(pnh);
+  parameter::readParameters(pnh);// params.cpp读取参数到全局变量，并且在params头文件中已经声明extern
+  // 在params.h中声明并初始化的常值变量可以直接使用
+  // 在params.cpp中声明的变量需要调用读取函数进行初始化，再借助头文件中的extern才能被使用
+  // TODO：为什么不把参数第一次声明都放在.h文件中呢？
 
 
   ImageProjection featureHandler(nh, pnh);

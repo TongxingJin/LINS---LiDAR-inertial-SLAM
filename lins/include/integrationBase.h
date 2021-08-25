@@ -67,15 +67,15 @@ class IntegrationBase {
       Eigen::Quaterniond &result_delta_q, Eigen::Vector3d &result_delta_v,
       Eigen::Vector3d &result_linearized_ba,
       Eigen::Vector3d &result_linearized_bg, bool update_jacobian) {
-    Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
+    Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);// 转换到delta_q的参考帧
     Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
     result_delta_q =
         delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2,
-                              un_gyr(2) * _dt / 2);
-    Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
-    Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
-    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
-    result_delta_v = delta_v + un_acc * _dt;
+                              un_gyr(2) * _dt / 2);// TODO:假设theta很小所做的近似
+    Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);// 转换到delta_q的参考帧
+    Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);// 在参考系下加速度的均值，不含bias，包含了重力
+    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;// 相对于参考系的位置
+    result_delta_v = delta_v + un_acc * _dt;// 都是相对于上一estimator时刻的
 
     result_linearized_ba = linearized_ba;
     result_linearized_bg = linearized_bg;
@@ -88,6 +88,7 @@ class IntegrationBase {
       Vector3d a_1_x = _acc_1 - linearized_ba;
       Matrix3d R_w_x, R_a_0_x, R_a_1_x;
 
+      // 反对称阵
       R_w_x << 0, -w_x(2), w_x(1),  // [w-b]x, cross product
           w_x(2), 0, -w_x(0), -w_x(1), w_x(0), 0;
       R_a_0_x << 0, -a_0_x(2), a_0_x(1),  // [w-a]x
@@ -169,6 +170,10 @@ class IntegrationBase {
     Vector3d result_linearized_ba;
     Vector3d result_linearized_bg;
 
+    // 中值积分
+    // TODO:更新雅可比矩阵
+    // 返回值是新的delta，不会改变bias
+    // 返回的delta和输入的delta在同一坐标系下
     midPointIntegration(_dt, acc_0, gyr_0, acc_1, _gyr_1, delta_p, delta_q,
                         delta_v, linearized_ba, linearized_bg, result_delta_p,
                         result_delta_q, result_delta_v, result_linearized_ba,
@@ -179,7 +184,7 @@ class IntegrationBase {
     delta_p = result_delta_p;
     delta_q = result_delta_q;
     delta_v = result_delta_v;
-    linearized_ba = result_linearized_ba;
+    linearized_ba = result_linearized_ba;// TODO:直接返回的
     linearized_bg = result_linearized_bg;
     delta_q.normalize();
     sum_dt += dt;

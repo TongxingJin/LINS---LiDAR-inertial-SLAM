@@ -60,7 +60,7 @@ class MapRingBuffer {
 
   int getSize() { return measMap_.size(); }
 
-  void addMeas(const Meas& meas, const double& t) {
+  void addMeas(const Meas& meas, const double& t) { // 基类的引用，可以接受继承类作为输入
     measMap_.insert(std::make_pair(t, meas));
 
     // ensure the size of the map, and remove the last element
@@ -71,12 +71,13 @@ class MapRingBuffer {
 
   void clear() { measMap_.clear(); }
 
-  void clean(double t) {
+  void clean(double t) { // 这里只是删除了智能指针，但是该指针已经被复制和使用，释放也不在这里进行
     while (measMap_.size() >= 1 && measMap_.begin()->first <= t) {
       measMap_.erase(measMap_.begin());
     }
   }
 
+  // 获取第一个大于actualTime的时间
   bool getNextTime(double actualTime, double& nextTime) {
     itMeas_ = measMap_.upper_bound(actualTime);
     if (itMeas_ != measMap_.end()) {

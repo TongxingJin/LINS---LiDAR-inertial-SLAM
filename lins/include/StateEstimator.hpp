@@ -214,9 +214,9 @@ class StateEstimator {
     globalStateYZX_.setIdentity();
 
     // Rotation matrics between XYZ convention and YZX-convention
-    R_yzx_to_xyz << 0., 0., 1., 1., 0., 0., 0., 1., 0.;
+    R_yzx_to_xyz << 0., 0., 1., 1., 0., 0., 0., 1., 0.;// 是对调，也是一种旋转
     R_xyz_to_yzx = R_yzx_to_xyz.transpose();
-    Q_yzx_to_xyz = R_yzx_to_xyz;
+    Q_yzx_to_xyz = R_yzx_to_xyz;// TODO: matrix3d可以直接赋值给quaternion
     Q_xyz_to_yzx = R_xyz_to_yzx;
 
     // gravity_feedback << 0, 0, -G0;
@@ -282,11 +282,11 @@ class StateEstimator {
                   pcl::PointCloud<PointType>::Ptr outlierPointCloud) {
     TicToc ts_fea;  // Calculate the time used in feature extraction
     scan_new_->setPointCloud(time, distortedPointCloud, cloudInfo,
-                             outlierPointCloud);
-    undistortPcl(scan_new_);
-    calculateSmoothness(scan_new_);
-    markOccludedPoints(scan_new_);
-    extractFeatures(scan_new_);
+                             outlierPointCloud);// 包含了关于该scan所有的中间信息
+    undistortPcl(scan_new_);// 将点云从雷达坐标系转换到车体坐标系，并将每个点距离scan第一点的时间戳保存在intensity的小数位中，并没有进行畸变校正
+    calculateSmoothness(scan_new_);// 计算曲率
+    markOccludedPoints(scan_new_);// 去掉易被遮挡点和噪点
+    extractFeatures(scan_new_);// 提取特征，也保存在了scan中
     imu_last_ = imu;
     double time_fea = ts_fea.toc();
 
@@ -355,6 +355,7 @@ class StateEstimator {
     preintegration_ = new integration::IntegrationBase(
         imu_last_.acc, imu_last_.gyr, INIT_BA, INIT_BW);
 
+    // 初始化kalman滤波器的初始姿态、协方差和上一时刻imu测量（TODO:）
     // Initialize position, velocity, acceleration bias, gyroscope bias by zeros
     filter_->initialization(scan_new_->time_, V3D(0, 0, 0), V3D(0, 0, 0),
                             V3D(0, 0, 0), V3D(0, 0, 0), imu_last_.acc,
@@ -363,12 +364,12 @@ class StateEstimator {
     kdtreeCorner_->setInputCloud(scan_new_->cornerPointsLessSharp_);
     kdtreeSurf_->setInputCloud(scan_new_->surfPointsLessFlat_);
 
-    pos_.setZero();
+    pos_.setZero();// 这里也有个状态
     vel_.setZero();
     quad_.setIdentity();
 
     // Slide the point cloud from scan_new_ to scan_last_
-    scan_last_.swap(scan_new_);
+    scan_last_.swap(scan_new_);// 外面要保证scan_last_的点云成员变量内存不能被释放
     scan_new_.reset(new Scan());
 
     return true;
@@ -668,7 +669,7 @@ class StateEstimator {
                          segInfo->segmentedCloudRange[i + 3] +
                          segInfo->segmentedCloudRange[i + 4] +
                          segInfo->segmentedCloudRange[i + 5];
-      scan->cloudCurvature_[i] = diffRange * diffRange;
+      scan->cloudCurvature_[i] = diffRange * diffRange;// 需要注意的每行的两端5个点的曲率没有意义
 
       scan->cloudNeighborPicked_[i] = 0;
       scan->cloudLabel_[i] = 0;
@@ -677,7 +678,7 @@ class StateEstimator {
     }
   }
 
-  void markOccludedPoints(ScanPtr scan) {
+  void markOccludedPoints(ScanPtr scan) { // 引用传参，会对scan做修改
     int cloudSize = scan->undistPointCloud_->points.size();
     cloud_msgs::cloud_info::Ptr segInfo = scan->cloudInfo_;
     for (int i = 5; i < cloudSize - 6; ++i) {
@@ -685,7 +686,7 @@ class StateEstimator {
       float depth2 = segInfo->segmentedCloudRange[i + 1];
       int columnDiff = std::abs(int(segInfo->segmentedCloudColInd[i + 1] -
                                     segInfo->segmentedCloudColInd[i]));
-      if (columnDiff < 10) {
+      if (columnDiff < 10) { // 易被遮挡点
         if (depth1 - depth2 > 0.3) {
           scan->cloudNeighborPicked_[i - 5] = 1;
           scan->cloudNeighborPicked_[i - 4] = 1;
@@ -702,6 +703,7 @@ class StateEstimator {
           scan->cloudNeighborPicked_[i + 6] = 1;
         }
       }
+      // 突出的噪点
       float diff1 = std::abs(segInfo->segmentedCloudRange[i - 1] -
                              segInfo->segmentedCloudRange[i]);
       float diff2 = std::abs(segInfo->segmentedCloudRange[i + 1] -
@@ -726,7 +728,7 @@ class StateEstimator {
 
     for (int i = 0; i < LINE_NUM; i++) {
       surfPointsLessFlatScan->clear();
-
+      // 由于记录了每一行的有意义的起止索引，因此两端5个自然就不计了
       for (int j = 0; j < 6; j++) {
         int sp = (segInfo->startRingIndex[i] * (6 - j) +
                   segInfo->endRingIndex[i] * j) / 6;
@@ -824,6 +826,7 @@ class StateEstimator {
       downSizeFilter_.filter(*surfPointsLessFlatScanDS);
       *(scan->surfPointsLessFlat_) += *surfPointsLessFlatScanDS;
     }
+    // 每个区域角点最多2+20，面点4+整个line降采样
   }
 
   void findCorrespondingSurfFeatures(

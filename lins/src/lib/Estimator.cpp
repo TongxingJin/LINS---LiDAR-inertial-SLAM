@@ -34,11 +34,11 @@ void LinsFusion::initialization() {
 
   // Subscribe to IMU, segmented point clouds, and map-refined odometry feedback
   subMapOdom_ = pnh_.subscribe<nav_msgs::Odometry>(
-      LIDAR_MAPPING_TOPIC, 5, &LinsFusion::mapOdometryCallback, this);
+      LIDAR_MAPPING_TOPIC, 5, &LinsFusion::mapOdometryCallback, this);// TODO:只是进行了坐标系的统一，没有使用啊
   subImu = pnh_.subscribe<sensor_msgs::Imu>(IMU_TOPIC, 100,
                                             &LinsFusion::imuCallback, this);
   subLaserCloud = pnh_.subscribe<sensor_msgs::PointCloud2>(
-      "/segmented_cloud", 2, &LinsFusion::laserCloudCallback, this);
+      "/segmented_cloud", 2, &LinsFusion::laserCloudCallback, this);// 缓存在map中
   subLaserCloudInfo = pnh_.subscribe<cloud_msgs::cloud_info>(
       "/segmented_cloud_info", 2, &LinsFusion::laserCloudInfoCallback, this);
   subOutlierCloud = pnh_.subscribe<sensor_msgs::PointCloud2>(
@@ -114,9 +114,9 @@ void LinsFusion::mapOdometryCallback(
             odometryMsg->pose.pose.position.y,
             odometryMsg->pose.pose.position.z);
   Q4D q_yzx(geoQuat.w, geoQuat.x, geoQuat.y, geoQuat.z);
-  V3D t_xyz = estimator->Q_yzx_to_xyz * t_yzx;
+  V3D t_xyz = estimator->Q_yzx_to_xyz * t_yzx;// 只是坐标系之间存在一个变换
   Q4D q_xyz =
-      estimator->Q_yzx_to_xyz * q_yzx * estimator->Q_yzx_to_xyz.inverse();
+      estimator->Q_yzx_to_xyz * q_yzx * estimator->Q_yzx_to_xyz.inverse();// 坐标系之间和本地之间都存在
 
   V3D rpy = math_utils::Q2rpy(q_xyz);
 }
@@ -132,11 +132,11 @@ void LinsFusion::imuCallback(const sensor_msgs::Imu::ConstPtr& imuMsg) {
   misalign_euler_angles_ << deg2rad(0.0), deg2rad(0.0),
       deg2rad(IMU_MISALIGN_ANGLE);
   alignIMUtoVehicle(misalign_euler_angles_, acc_raw_, gyr_raw_, acc_aligned_,
-                    gyr_aligned_);
+                    gyr_aligned_);// 把测量从IMU坐标系转换到车体坐标系
 
   // Add a new IMU measurement
   Imu imu(imuMsg->header.stamp.toSec(), acc_aligned_, gyr_aligned_);
-  imuBuf_.addMeas(imu, imuMsg->header.stamp.toSec());
+  imuBuf_.addMeas(imu, imuMsg->header.stamp.toSec());// 测量增加到buffer（有的数据可能来不及处理而被直接删掉）
 
   // Trigger the Kalman filter
   performStateEstimation();
@@ -144,7 +144,7 @@ void LinsFusion::imuCallback(const sensor_msgs::Imu::ConstPtr& imuMsg) {
 
 void LinsFusion::processFirstPointCloud() {
   // Use the most recent poing cloud to initialize the estimator
-  pclBuf_.getLastTime(scan_time_);
+  pclBuf_.getLastTime(scan_time_);// 该imu信息也会是在scan_time后的第一条imu信息
 
   sensor_msgs::PointCloud2::ConstPtr pclMsg;
   pclBuf_.getLastMeas(pclMsg);
@@ -157,7 +157,7 @@ void LinsFusion::processFirstPointCloud() {
   pcl::fromROSMsg(*outlierMsg, *outlierPointCloud);
 
   cloud_msgs::cloud_info cloudInfoMsg;
-  cloudInfoBuf_.getLastMeas(cloudInfoMsg);
+  cloudInfoBuf_.getLastMeas(cloudInfoMsg);// TODO:不需要考虑时间戳是否一致么？
 
   // The latest IMU measurement records the inertial information when the new
   // point cloud is recorded
@@ -166,7 +166,7 @@ void LinsFusion::processFirstPointCloud() {
 
   // Initialize the iterative-ESKF by the first PCL
   estimator->processPCL(scan_time_, imu, distortedPointCloud, cloudInfoMsg,
-                        outlierPointCloud);
+                        outlierPointCloud);// 既有成员共享指针的拷贝，也有深拷贝
 
   // Clear all the PCLs before the initialization PCL
   pclBuf_.clean(estimator->getTime());
@@ -203,7 +203,7 @@ void LinsFusion::publishTopics() {
 
 bool LinsFusion::processPointClouds() {
   // Obtain the next PCL
-  pclBuf_.itMeas_ = pclBuf_.measMap_.upper_bound(estimator->getTime());
+  pclBuf_.itMeas_ = pclBuf_.measMap_.upper_bound(estimator->getTime());// 第一个大于estimator的点云
   sensor_msgs::PointCloud2::ConstPtr pclMsg = pclBuf_.itMeas_->second;
   scan_time_ = pclBuf_.itMeas_->first;
   distortedPointCloud->clear();
@@ -219,18 +219,21 @@ bool LinsFusion::processPointClouds() {
   cloud_msgs::cloud_info cloudInfoMsg = cloudInfoBuf_.itMeas_->second;
 
   imuBuf_.getLastTime(last_imu_time_);
-  if (last_imu_time_ < scan_time_) {
+  if (last_imu_time_ < scan_time_) { // 要保证最新的imu的数据，涵盖scan。如果不足以完成scan的一个周期，直接返回
     // ROS_WARN("Wait for more IMU measurement!");
     return false;
   }
 
   // Propagate IMU measurements between two consecutive scans
   int imu_couter = 0;
+  // 如果estimator的时间戳还没有达到点云的时间戳
+  // 且还有更新的imu数据用来更新estimator
+  // 目的在于将estimator更新到点云的时刻
   while (estimator->getTime() < scan_time_ &&
          (imuBuf_.itMeas_ = imuBuf_.measMap_.upper_bound(
               estimator->getTime())) != imuBuf_.measMap_.end()) {
     double dt =
-        std::min(imuBuf_.itMeas_->first, scan_time_) - estimator->getTime();
+        std::min(imuBuf_.itMeas_->first, scan_time_) - estimator->getTime();// 计算更新时长dt，一般是imu的周期，最后一个则小于1个周期
     Imu imu = imuBuf_.itMeas_->second;
     estimator->processImu(dt, imu.acc, imu.gyr);
   }
@@ -252,6 +255,7 @@ bool LinsFusion::processPointClouds() {
 }
 
 void LinsFusion::performStateEstimation() {
+  // imu buffer不应该为空，因为perform是在往buffer里push后所触发的
   if (imuBuf_.empty() || pclBuf_.empty() || cloudInfoBuf_.empty() ||
       outlierBuf_.empty())
     return;
@@ -262,7 +266,7 @@ void LinsFusion::performStateEstimation() {
   }
 
   // Iterate all PCL measurements in the buffer
-  pclBuf_.getLastTime(last_scan_time_);
+  pclBuf_.getLastTime(last_scan_time_);// TODO:在处理的过程中可能收到新的点云，但并没有再更新
   while (!pclBuf_.empty() && estimator->getTime() < last_scan_time_) {
     TicToc ts_total;
     if (!processPointClouds()) break;

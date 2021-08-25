@@ -83,10 +83,12 @@ T readParam(ros::NodeHandle& n, std::string name) {
   return ans;
 }
 
+// 读取参数到全局变量
+// 这些在本文件中刚声明，并且在头文件中声明extern，便于再被其他文件直接include
 void readParameters(ros::NodeHandle& n) {
   std::string config_file;
-  config_file = readParam<std::string>(n, "config_file");
-  cv::FileStorage fsSettings(config_file, cv::FileStorage::READ);
+  config_file = readParam<std::string>(n, "config_file");// 从参数服务器获取配置参数的路径
+  cv::FileStorage fsSettings(config_file, cv::FileStorage::READ);// 从该路径加载所有的参数
   if (!fsSettings.isOpened()) {
     std::cerr << "ERROR: Wrong path to settings" << std::endl;
   }

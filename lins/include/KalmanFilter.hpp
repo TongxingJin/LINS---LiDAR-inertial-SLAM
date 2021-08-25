@@ -255,12 +255,12 @@ class StatePredictor {
     double covPitch = pow(deg2rad(INIT_ATT_STD(1)), 2);
     double covYaw = pow(deg2rad(INIT_ATT_STD(2)), 2);
 
-    V3D covPos = INIT_POS_STD.array().square();
+    V3D covPos = INIT_POS_STD.array().square();// 每个元素求平方
     V3D covVel = INIT_VEL_STD.array().square();
     V3D covAcc = INIT_ACC_STD.array().square();
     V3D covGyr = INIT_GYR_STD.array().square();
 
-    double peba = pow(ACC_N * ug, 2);
+    double peba = pow(ACC_N * ug, 2);// TODO:
     double pebg = pow(GYR_N * dph, 2);
     double pweba = pow(ACC_W * ugpsHz, 2);
     double pwebg = pow(GYR_W * dpsh, 2);
