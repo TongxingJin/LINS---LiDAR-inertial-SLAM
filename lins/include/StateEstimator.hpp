@@ -282,7 +282,7 @@ class StateEstimator {
                   pcl::PointCloud<PointType>::Ptr outlierPointCloud) {
     TicToc ts_fea;  // Calculate the time used in feature extraction
     scan_new_->setPointCloud(time, distortedPointCloud, cloudInfo,
-                             outlierPointCloud);// 包含了关于该scan所有的中间信息
+                             outlierPointCloud);// 包含了关于该scan所有的中间信息，点云是对指针的复制
     undistortPcl(scan_new_);// 将点云从雷达坐标系转换到车体坐标系，并将每个点距离scan第一点的时间戳保存在intensity的小数位中，并没有进行畸变校正
     calculateSmoothness(scan_new_);// 计算曲率
     markOccludedPoints(scan_new_);// 去掉易被遮挡点和噪点
@@ -296,8 +296,8 @@ class StateEstimator {
         if (processFirstScan()) status_ = STATUS_FIRST_SCAN;
         break;
       case STATUS_FIRST_SCAN:
-        if (processSecondScan())
-          status_ = STATUS_RUNNING;
+        if (processSecondScan()) // 点云只进行了一次初始化，imu进行了预积分
+          status_ = STATUS_RUNNING; // 到这里才真正完成了一次初始化
         else
           status_ = STATUS_INIT;
         break;
@@ -390,11 +390,14 @@ class StateEstimator {
     Q4D ql;
     V3D v0, v1, ba0, bw0;
     ba0.setZero();
+    // 计算相对上一关键帧的姿态和位置
     ql = preintegration_->delta_q;
+    // TODO:这里只是加速度带来的位置的增量，是否需要考虑速度带来的位置的增量？??还是说此时的速度默认为0？
     pl = preintegration_->delta_p +
          0.5 * linState_.gn_ * preintegration_->sum_dt *
              preintegration_->sum_dt -
-         0.5 * ba0 * preintegration_->sum_dt * preintegration_->sum_dt;
+         0.5 * ba0 * preintegration_->sum_dt * preintegration_->sum_dt;// 假设两个关键帧之间的重力不变，这里减去重力加速度对位移的影响
+    // 根据点云计算相对位姿
     estimateTransform(scan_last_, scan_new_, pl, ql);
 
     // Calculate initial state using relative transform calculated by point
@@ -408,10 +411,12 @@ class StateEstimator {
 
     double roll_init, pitch_init, yaw_init = deg2rad(0.0);
     // Calculate rough roll and pitch angles using IMU measurements
+    // 假设车一开始静止，此时加速度应该为g，根据加速度在xy轴上的分量估计roll和pitch
     calculateRPfromGravity(imu_last_.acc - ba0, roll_init, pitch_init);
 
     // Initialize the global state, e.g., position, velocity, and orientation
     // represented in the original frame (the first-scan-frame)
+    // 初始化全局坐标系下的状态
     globalState_ = GlobalState(
         r1, v1, rpy2Quat(V3D(roll_init, pitch_init, yaw_init)), ba0, bw0);
 
@@ -833,7 +838,7 @@ class StateEstimator {
       ScanPtr lastScan, ScanPtr newScan,
       pcl::PointCloud<PointType>::Ptr keypoints,
       pcl::PointCloud<PointType>::Ptr jacobianCoff, int iterCount) {
-    int surfPointsFlatNum = newScan->surfPointsFlat_->points.size();
+    int surfPointsFlatNum = newScan->surfPointsFlat_->points.size();// TODO:last scan吧？
 
     for (int i = 0; i < surfPointsFlatNum; i++) {
       PointType pointSel;
@@ -882,7 +887,7 @@ class StateEstimator {
                 minPointSqDis3 = pointSqDis;
                 minPointInd3 = j;
               }
-            }
+            }// 存在三点共线的几率，这里应该共线找一个，不共线找一个
           }
 
           for (int j = closestPointInd - 1; j >= 0; j--) {
@@ -916,7 +921,7 @@ class StateEstimator {
         pointSearchSurfInd2[i] = minPointInd2;
         pointSearchSurfInd3[i] = minPointInd3;
       }
-
+      // 类似于loam求平面方程
       if (pointSearchSurfInd2[i] >= 0 && pointSearchSurfInd3[i] >= 0) {
         tripod1 = laserCloudSurfLast->points[pointSearchSurfInd1[i]];
         tripod2 = laserCloudSurfLast->points[pointSearchSurfInd2[i]];
@@ -1185,7 +1190,7 @@ class StateEstimator {
         ROS_WARN("Insufficient matched corners...");
         continue;
       }
-
+      // 没有用ceres而是构建方程求解变换
       if (calculateTransformation(lastScan, newScan, keypointCorns_,
                                   jacobianCoffCorns, keypointSurfs_,
                                   jacobianCoffSurfs, iter)) {
@@ -1478,7 +1483,7 @@ class StateEstimator {
   // !@Global transformation from the original scan-frame to current scan-frame
   GlobalState globalState_;
   // !@Relative transformation from scan0-frame t0 scan1-frame
-  GlobalState linState_;
+  GlobalState linState_;// 也是点云匹配的优化变量
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, 1> difVecLinInv_;
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, 1> updateVec_;
   double updateVecNorm_ = 0.0;
