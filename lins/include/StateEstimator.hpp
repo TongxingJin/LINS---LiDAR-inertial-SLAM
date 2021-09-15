@@ -524,7 +524,7 @@ class StateEstimator {
 
       Hk_.setZero();
       V3D axis = Quat2axis(linState_.qbn_);
-      for (int i = 0; i < DIM_OF_MEAS; ++i) {
+      for (int i = 0; i < DIM_OF_MEAS; ++i) { // 点数
         // Point represented in 2-frame (e.g., the end frame) in a
         // xyz-convention
         V3D P2xyz(keypoints_->points[i].x, keypoints_->points[i].y,

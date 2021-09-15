@@ -133,16 +133,28 @@ class StatePredictor {
     }
 
     // Average acceleration and angular rate
+<<<<<<< HEAD
     GlobalState state_tmp = state_;// 世界坐标系下的姿态，从第一帧积累得到的
     // 上一时刻的加速度在世界坐标系下的投影，扣除bias和重力加速度
     V3D un_acc_0 = state_tmp.qbn_ * (acc_last - state_tmp.ba_) + state_tmp.gn_;
+=======
+    GlobalState state_tmp = state_;
+    // 以下假设在相邻关键帧之间bias和重力g不变
+    // state_tmp.gn_重力也是在上一关键帧坐标系下的
+    V3D un_acc_0 = state_tmp.qbn_ * (acc_last - state_tmp.ba_) + state_tmp.gn_;// 都是相对于上一关键帧的
+>>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
     V3D un_gyr = 0.5 * (gyr_last + gyr) - state_tmp.bw_;
     Q4D dq = axis2Quat(un_gyr * dt);
     state_tmp.qbn_ = (state_tmp.qbn_ * dq).normalized();
     V3D un_acc_1 = state_tmp.qbn_ * (acc - state_tmp.ba_) + state_tmp.gn_;//　基于新的姿态计算加速度分量
     V3D un_acc = 0.5 * (un_acc_0 + un_acc_1);
+    // 以上完成了对a和g的中值求解
 
+<<<<<<< HEAD
     // 从第一帧积累得到的位姿
+=======
+    // 更新相对于上一关键帧的位置和姿态
+>>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
     // State integral
     state_tmp.rn_ = state_tmp.rn_ + dt * state_tmp.vn_ + 0.5 * dt * dt * un_acc;
     state_tmp.vn_ = state_tmp.vn_ + dt * un_acc;
@@ -365,7 +377,7 @@ class StatePredictor {
 
   inline bool isInitialized() { return flag_init_state_; }
 
-  GlobalState state_;
+  GlobalState state_;// TODO:到底是两帧之间的相对位姿，还是相对第一帧的位姿呢？
   double time_;
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_>
       F_;
