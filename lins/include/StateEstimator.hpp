@@ -474,8 +474,8 @@ class StateEstimator {
 
   void performIESKF() {
     // Store current state and perform initialization
-    Pk_ = filter_->covariance_;
-    GlobalState filterState = filter_->state_;
+    Pk_ = filter_->covariance_;// 使用IMU一直更新的相对位姿误差协方差矩阵
+    GlobalState filterState = filter_->state_;// 相对上一关键帧的位姿
     linState_ = filterState;
 
     double residualNorm = 1e6;
@@ -556,7 +556,7 @@ class StateEstimator {
       Kk_ = Pk_ * Hk_.transpose() * Pyinv_;  // K = P*H.transpose()*S.inverse()
 
       filterState.boxMinus(linState_, difVecLinInv_);
-      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;
+      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;// delta
 
       // Divergence determination
       bool hasNaN = false;

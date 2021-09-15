@@ -133,16 +133,10 @@ class StatePredictor {
     }
 
     // Average acceleration and angular rate
-<<<<<<< HEAD
-    GlobalState state_tmp = state_;// 世界坐标系下的姿态，从第一帧积累得到的
-    // 上一时刻的加速度在世界坐标系下的投影，扣除bias和重力加速度
-    V3D un_acc_0 = state_tmp.qbn_ * (acc_last - state_tmp.ba_) + state_tmp.gn_;
-=======
     GlobalState state_tmp = state_;
     // 以下假设在相邻关键帧之间bias和重力g不变
     // state_tmp.gn_重力也是在上一关键帧坐标系下的
     V3D un_acc_0 = state_tmp.qbn_ * (acc_last - state_tmp.ba_) + state_tmp.gn_;// 都是相对于上一关键帧的
->>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
     V3D un_gyr = 0.5 * (gyr_last + gyr) - state_tmp.bw_;
     Q4D dq = axis2Quat(un_gyr * dt);
     state_tmp.qbn_ = (state_tmp.qbn_ * dq).normalized();
@@ -150,16 +144,13 @@ class StatePredictor {
     V3D un_acc = 0.5 * (un_acc_0 + un_acc_1);
     // 以上完成了对a和g的中值求解
 
-<<<<<<< HEAD
-    // 从第一帧积累得到的位姿
-=======
     // 更新相对于上一关键帧的位置和姿态
->>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
     // State integral
     state_tmp.rn_ = state_tmp.rn_ + dt * state_tmp.vn_ + 0.5 * dt * dt * un_acc;
     state_tmp.vn_ = state_tmp.vn_ + dt * un_acc;
 
     if (update_jacobian_) {
+      // 对应论文公式(6)
       MXD Ft =
           MXD::Zero(GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_);
       Ft.block<3, 3>(GlobalState::pos_, GlobalState::vel_) = M3D::Identity();
@@ -168,12 +159,13 @@ class StatePredictor {
           -state_tmp.qbn_.toRotationMatrix() * skew(acc - state_tmp.ba_);
       Ft.block<3, 3>(GlobalState::vel_, GlobalState::acc_) =
           -state_tmp.qbn_.toRotationMatrix();
-      Ft.block<3, 3>(GlobalState::vel_, GlobalState::gra_) = M3D::Identity();
+      Ft.block<3, 3>(GlobalState::vel_, GlobalState::gra_) = M3D::Identity();// 这里应该差一个负号，论文也不对
 
       Ft.block<3, 3>(GlobalState::att_, GlobalState::att_) =
           - skew(gyr - state_tmp.bw_);
       Ft.block<3, 3>(GlobalState::att_, GlobalState::gyr_) = -M3D::Identity();
 
+      // 对应论文公式(7)
       MXD Gt =
           MXD::Zero(GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_NOISE_);
       Gt.block<3, 3>(GlobalState::vel_, 0) = -state_tmp.qbn_.toRotationMatrix();
