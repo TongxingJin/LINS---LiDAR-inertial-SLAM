@@ -193,6 +193,7 @@ static Eigen::Vector3d Q2rpy(const Eigen::Quaterniond &Q) {
   return R2rpy(Q.toRotationMatrix());
 }
 
+// 反对称阵
 template <typename Derived>
 static Eigen::Matrix<typename Derived::Scalar, 3, 3> skew(
     const Eigen::MatrixBase<Derived> &q) {

@@ -130,7 +130,7 @@ void LinsFusion::imuCallback(const sensor_msgs::Imu::ConstPtr& imuMsg) {
   gyr_raw_ << imuMsg->angular_velocity.x, imuMsg->angular_velocity.y,
       imuMsg->angular_velocity.z;
   misalign_euler_angles_ << deg2rad(0.0), deg2rad(0.0),
-      deg2rad(IMU_MISALIGN_ANGLE);
+      deg2rad(IMU_MISALIGN_ANGLE);// 从IMU坐标系转换到车体坐标系
   alignIMUtoVehicle(misalign_euler_angles_, acc_raw_, gyr_raw_, acc_aligned_,
                     gyr_aligned_);// 把测量从IMU坐标系转换到车体坐标系
 
@@ -201,7 +201,9 @@ void LinsFusion::publishTopics() {
   publishOdometryYZX(scan_time_);
 }
 
+// 至少是第2帧
 bool LinsFusion::processPointClouds() {
+  // 解析第一帧更新的激光点云
   // Obtain the next PCL
   pclBuf_.itMeas_ = pclBuf_.measMap_.upper_bound(estimator->getTime());// 第一个大于estimator的点云
   sensor_msgs::PointCloud2::ConstPtr pclMsg = pclBuf_.itMeas_->second;
@@ -219,7 +221,7 @@ bool LinsFusion::processPointClouds() {
   cloud_msgs::cloud_info cloudInfoMsg = cloudInfoBuf_.itMeas_->second;
 
   imuBuf_.getLastTime(last_imu_time_);
-  if (last_imu_time_ < scan_time_) { // 要保证最新的imu的数据，涵盖scan。如果不足以完成scan的一个周期，直接返回
+  if (last_imu_time_ < scan_time_) { // 如果imu不能覆盖第一帧新点云，退出。TODO:应该在外面就提前退出的
     // ROS_WARN("Wait for more IMU measurement!");
     return false;
   }
@@ -232,10 +234,12 @@ bool LinsFusion::processPointClouds() {
   while (estimator->getTime() < scan_time_ &&
          (imuBuf_.itMeas_ = imuBuf_.measMap_.upper_bound(
               estimator->getTime())) != imuBuf_.measMap_.end()) {
+    // 积分时长从上一时刻开始，到imu和点云中的较小时刻为止
+    // 因此，跨点云的imu消息会被两次积分
     double dt =
         std::min(imuBuf_.itMeas_->first, scan_time_) - estimator->getTime();// 计算更新时长dt，一般是imu的周期，最后一个则小于1个周期
     Imu imu = imuBuf_.itMeas_->second;
-    estimator->processImu(dt, imu.acc, imu.gyr);
+    estimator->processImu(dt, imu.acc, imu.gyr);// 这里的imu已经是车体坐标系下的了
   }
 
   Imu imu;
@@ -254,20 +258,21 @@ bool LinsFusion::processPointClouds() {
   return true;
 }
 
+// 每次IMU的回调函数中都会尝试执行
 void LinsFusion::performStateEstimation() {
-  // imu buffer不应该为空，因为perform是在往buffer里push后所触发的
+  // 需要IMU和点云数据都具备才会执行
   if (imuBuf_.empty() || pclBuf_.empty() || cloudInfoBuf_.empty() ||
       outlierBuf_.empty())
-    return;
-
+    return;// 如果imu的时间戳没能覆盖第一个点云，也应该及时返回，不要再往下处理了
+  
   if (!estimator->isInitialized()) {
     processFirstPointCloud();
     return;
   }
 
   // Iterate all PCL measurements in the buffer
-  pclBuf_.getLastTime(last_scan_time_);// TODO:在处理的过程中可能收到新的点云，但并没有再更新
-  while (!pclBuf_.empty() && estimator->getTime() < last_scan_time_) {
+  pclBuf_.getLastTime(last_scan_time_);// TODO:在处理的过程中可能收到新的点云，但并没有再更新// 如果存在至少一帧新激光，那么estimator需要被更新
+  while (!pclBuf_.empty() && estimator->getTime() < last_scan_time_) { 
     TicToc ts_total;
     if (!processPointClouds()) break;
     double time_total = ts_total.toc();
