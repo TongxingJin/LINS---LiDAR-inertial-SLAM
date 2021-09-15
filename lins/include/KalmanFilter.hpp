@@ -124,7 +124,7 @@ class StatePredictor {
 
   bool predict(double dt, const V3D& acc, const V3D& gyr,
                bool update_jacobian_ = true) {
-    if (!isInitialized()) return false;
+    if (!isInitialized()) return false;// 是否已经有了初始状态，即初始化了一个相对位姿
 
     if (!flag_init_imu_) {
       flag_init_imu_ = true;
@@ -133,14 +133,16 @@ class StatePredictor {
     }
 
     // Average acceleration and angular rate
-    GlobalState state_tmp = state_;
+    GlobalState state_tmp = state_;// 世界坐标系下的姿态，从第一帧积累得到的
+    // 上一时刻的加速度在世界坐标系下的投影，扣除bias和重力加速度
     V3D un_acc_0 = state_tmp.qbn_ * (acc_last - state_tmp.ba_) + state_tmp.gn_;
     V3D un_gyr = 0.5 * (gyr_last + gyr) - state_tmp.bw_;
     Q4D dq = axis2Quat(un_gyr * dt);
     state_tmp.qbn_ = (state_tmp.qbn_ * dq).normalized();
-    V3D un_acc_1 = state_tmp.qbn_ * (acc - state_tmp.ba_) + state_tmp.gn_;
+    V3D un_acc_1 = state_tmp.qbn_ * (acc - state_tmp.ba_) + state_tmp.gn_;//　基于新的姿态计算加速度分量
     V3D un_acc = 0.5 * (un_acc_0 + un_acc_1);
 
+    // 从第一帧积累得到的位姿
     // State integral
     state_tmp.rn_ = state_tmp.rn_ + dt * state_tmp.vn_ + 0.5 * dt * dt * un_acc;
     state_tmp.vn_ = state_tmp.vn_ + dt * un_acc;
@@ -236,7 +238,7 @@ class StatePredictor {
                       double roll = 0.0, double pitch = 0.0, double yaw = 0.0) {
     state_ = GlobalState(rn, vn, rpy2Quat(V3D(roll, pitch, yaw)), ba, bw);
     time_ = time;
-    acc_last = acc;
+    acc_last = acc;// 为了中值积分
     gyr_last = gyr;
     flag_init_imu_ = true;
     flag_init_state_ = true;

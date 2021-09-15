@@ -392,18 +392,21 @@ class StateEstimator {
     ba0.setZero();
     // 计算相对上一关键帧的姿态和位置
     ql = preintegration_->delta_q;
-    // TODO:这里只是加速度带来的位置的增量，是否需要考虑速度带来的位置的增量？??还是说此时的速度默认为0？
+    // TODO:这里只是加速度带来的位置的增量，是否需要考虑速度带来的位置的增量？??还是因为初始时刻速度为0？
     pl = preintegration_->delta_p +
          0.5 * linState_.gn_ * preintegration_->sum_dt *
              preintegration_->sum_dt -
-         0.5 * ba0 * preintegration_->sum_dt * preintegration_->sum_dt;// 假设两个关键帧之间的重力不变，这里减去重力加速度对位移的影响
-    // 根据点云计算相对位姿
-    estimateTransform(scan_last_, scan_new_, pl, ql);
+         0.5 * ba0 * preintegration_->sum_dt * preintegration_->sum_dt;// 假设两个关键帧之间的重力不变，这里减去重力加速度和bias(内部已经做了，这里设置为0)对位移的影响
+    // 上面的linState_.gn_应该是在上一时刻状态下的重力加速度
+    // 以上预测了相对姿态和位置，下面以此为初值计算点云相对位姿
+    estimateTransform(scan_last_, scan_new_, pl, ql);// 结果会覆盖在pl ql中
 
     // Calculate initial state using relative transform calculated by point
     // clouds and that by IMU preintegration
-    estimateInitialState(pl, ql, v0, v1, ba0, bw0);
+    estimateInitialState(pl, ql, v0, v1, ba0, bw0);// 根据相对位置和时间，计算速度v0v1
 
+    // 由于kalman的状态是相对位姿，因此只有获得了两帧后才能进行kalman的初始化
+    // 这里主要是对相对位置和速度等进行了初始化（角度没有用点云匹配的结果，而是单位阵）
     // Initialize the Kalman filter by estimated values
     V3D r1 = pl;
     filter_->initialization(scan_new_->time_, r1, v1, ba0, bw0, imu_last_.acc,
@@ -416,13 +419,14 @@ class StateEstimator {
 
     // Initialize the global state, e.g., position, velocity, and orientation
     // represented in the original frame (the first-scan-frame)
-    // 初始化全局坐标系下的状态
+    // 初始化状态
+    // 即根据点云匹配计算出的相对位置和速度，静止估计出的roll和pitch（角度是全局的？），给定的bias
     globalState_ = GlobalState(
         r1, v1, rpy2Quat(V3D(roll_init, pitch_init, yaw_init)), ba0, bw0);
 
     // Use relative transorm linState_ to undistort point cloud (under the
     // constant-speed assumption)
-    updatePointCloud();
+    updatePointCloud();// 运动畸变去除，转换到终止时刻，并且交换坐标轴改变习惯
 
     scan_last_.swap(scan_new_);
     scan_new_.reset(new Scan());
@@ -606,7 +610,7 @@ class StateEstimator {
   }
 
   void calculateRPfromGravity(const V3D& fbib, double& roll, double& pitch) {
-    pitch = -sign(fbib.z()) * asin(fbib.x() / G0);
+    pitch = -sign(fbib.z()) * asin(fbib.x() / G0);// TODO:这里的符号定义
     roll = sign(fbib.z()) * asin(fbib.y() / G0);
   }
 
@@ -932,14 +936,14 @@ class StateEstimator {
         V3D P2xyz(tripod2.x, tripod2.y, tripod2.z);
         V3D P3xyz(tripod3.x, tripod3.y, tripod3.z);
 
-        V3D M = math_utils::skew(P1xyz - P2xyz) * (P1xyz - P3xyz);
+        V3D M = math_utils::skew(P1xyz - P2xyz) * (P1xyz - P3xyz);// 叉乘axb=(ax)b，法向
         double r = (P0xyz - P1xyz).transpose() * M;
         double m = M.norm();
-        float res = r / m;
+        float res = r / m;// 高，误差
 
-        V3D jacxyz = M.transpose() / (m);
+        V3D jacxyz = M.transpose() / (m);// 同时也是残差对xyz的雅可比
 
-        float s = 1;
+        float s = 1;// TODO:s是权重？
         if (iterCount >= ICP_FREQ) {
           s = 1 -
               1.8 * fabs(res) /
@@ -954,7 +958,7 @@ class StateEstimator {
           coeff.intensity = s * res;
 
           keypoints->push_back(newScan->surfPointsFlat_->points[i]);
-          jacobianCoff->push_back(coeff);
+          jacobianCoff->push_back(coeff);// 雅可比和残差，TODO:不过这里的雅可比没有考虑transformToStart
         }
       }
     }
@@ -1044,13 +1048,13 @@ class StateEstimator {
         V3D P1xyz(tripod1.x, tripod1.y, tripod1.z);
         V3D P2xyz(tripod2.x, tripod2.y, tripod2.z);
 
-        V3D P = math_utils::skew(P0xyz - P1xyz) * (P0xyz - P2xyz);
+        V3D P = math_utils::skew(P0xyz - P1xyz) * (P0xyz - P2xyz);// 面积法向量
         float r = P.norm();
         float d12 = (P1xyz - P2xyz).norm();
         float res = r / d12;
 
         V3D jacxyz =
-            P.transpose() * math_utils::skew(P2xyz - P1xyz) / (d12 * r);
+            P.transpose() * math_utils::skew(P2xyz - P1xyz) / (d12 * r);// 单位高向量
 
         float s = 1;
         if (iterCount >= ICP_FREQ) {
@@ -1170,7 +1174,7 @@ class StateEstimator {
 
   void estimateTransform(ScanPtr lastScan, ScanPtr newScan, V3D& t, Q4D& q) {
     double sum_dt = preintegration_->sum_dt;
-    linState_.rn_ = t;
+    linState_.rn_ = t;// 初始位置和姿态估计
     linState_.qbn_ = q;
     for (int iter = 0; iter < NUM_ITER; iter++) {
       keypointSurfs_->clear();
@@ -1250,7 +1254,7 @@ class StateEstimator {
       R21xyz.normalized();
       // Translation vector from frame1 to frame2 represented in frame1
       V3D T112xyz = s * linState_.rn_;
-
+      // TODO:这里没有详细推导雅可比
       V3D jacobian1xyz =
           coff_xyz.transpose() *
           (-R21xyz.toRotationMatrix() * skew(P2xyz));  // rotation jacobian
@@ -1269,7 +1273,7 @@ class StateEstimator {
     JT = J.transpose();
     JTJ = JT * J;
     JTb = JT * b;
-    x = JTJ.colPivHouseholderQr().solve(JTb);
+    x = JTJ.colPivHouseholderQr().solve(JTb);// 求解最小二乘，参考LOAM和深蓝学院激光SLAM ppt
 
     // Determine whether x is degenerated
     bool isDegenerate = false;

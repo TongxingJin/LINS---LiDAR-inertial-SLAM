@@ -48,7 +48,7 @@ class IntegrationBase {
         delta_q{Eigen::Quaterniond::Identity()},
         delta_v{Eigen::Vector3d::Zero()}
 
-  {}
+  {} // delta_p应该是加速度所带来的位移的增量
 
   void push_back(double dt, const Eigen::Vector3d &acc,
                  const Eigen::Vector3d &gyr) {
@@ -58,6 +58,7 @@ class IntegrationBase {
     propagate(dt, acc, gyr);
   }
 
+  // 预积分
   void midPointIntegration(
       double _dt, const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
       const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
@@ -67,19 +68,20 @@ class IntegrationBase {
       Eigen::Quaterniond &result_delta_q, Eigen::Vector3d &result_delta_v,
       Eigen::Vector3d &result_linearized_ba,
       Eigen::Vector3d &result_linearized_bg, bool update_jacobian) {
-    Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);// 转换到delta_q的参考帧
-    Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
+    Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);// 上一时刻的加速度转换到上一关键帧
+    Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;// 角速度的中值
     result_delta_q =
         delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2,
                               un_gyr(2) * _dt / 2);// TODO:假设theta很小所做的近似
-    Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);// 转换到delta_q的参考帧
+    Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);// 转换到上一关键帧
     Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);// 在参考系下加速度的均值，不含bias，包含了重力
-    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;// 相对于参考系的位置
+    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;// 相对于上一关键帧
     result_delta_v = delta_v + un_acc * _dt;// 都是相对于上一estimator时刻的
 
     result_linearized_ba = linearized_ba;
     result_linearized_bg = linearized_bg;
 
+    // TODO:对雅可比矩阵进行迭代
     if (update_jacobian) {
       Vector3d w_x =
           0.5 * (_gyr_0 + _gyr_1) - linearized_bg;  // angular_velocity
