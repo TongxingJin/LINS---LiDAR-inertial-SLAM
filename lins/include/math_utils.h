@@ -37,7 +37,7 @@ static Type wrap_pi(Type x) {
 }
 
 static void enforceSymmetry(Eigen::MatrixXd &mat) {
-  mat = 0.5 * (mat + mat.transpose()).eval();
+  mat = 0.5 * (mat + mat.transpose()).eval();// 自己对自己进行赋值的时候，先把结果存到临时变量
 }
 
 static Eigen::Quaterniond axis2Quat(const Eigen::Vector3d &axis, double theta) {
@@ -302,6 +302,7 @@ static Eigen::Matrix<typename Derived::Scalar, 3, 3> Rleft(
   return ans;
 }
 
+// TODO:这是什么公式？？？角轴转旋转矩阵？
 static Eigen::Matrix<double, 3, 3> Rinvleft(
     const Eigen::Matrix<double, 3, 1> axis) {
   Eigen::Matrix<double, 3, 3> ans;

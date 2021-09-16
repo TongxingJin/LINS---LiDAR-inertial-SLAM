@@ -449,12 +449,16 @@ class StateEstimator {
       return false;
     }
 
+    // 迭代对滤波器的状态进行更新(实际的更新过程并不是在filter中进行)
     // Update states
     performIESKF();
+    // 相对姿态累积成全局姿态
     // Update global transform by estimated relative transform
     integrateTransformation();
+    // 初始化滤波器中保存的相对位姿和协方差
     filter_->reset(1);
 
+    // 根据滤波器得到的当前坐标系下重力的分量，重新计算roll和pitch，更新到全局姿态
     double roll, pitch;
     // Because the estimated gravity is represented in the b-frame, we can
     // directly solve more accurate roll and pitch angles to correct the global
@@ -462,6 +466,7 @@ class StateEstimator {
     calculateRPfromGravity(filter_->state_.gn_, roll, pitch);
     correctRollPitch(roll, pitch);
 
+    // 点云校正到终止时刻，并对点云和绝对位姿进行坐标习惯变换
     // Undistort point cloud using estimated relative transform
     updatePointCloud();
 
@@ -476,7 +481,7 @@ class StateEstimator {
     // Store current state and perform initialization
     Pk_ = filter_->covariance_;// 使用IMU一直更新的相对位姿误差协方差矩阵
     GlobalState filterState = filter_->state_;// 相对上一关键帧的位姿
-    linState_ = filterState;
+    linState_ = filterState;// linState_会一直被更新
 
     double residualNorm = 1e6;
     bool hasConverged = false;
@@ -504,6 +509,7 @@ class StateEstimator {
           ROS_WARN("Insufficient matched corners...");
         }
       }
+      // 以上对每个特征点投影到起始时刻并搜索最近邻，计算残差和雅可比（残差相对于投影后的点的坐标的）
 
       // Sum up jocobians and residuals
       keypoints_->clear();
@@ -532,13 +538,14 @@ class StateEstimator {
         V3D coff_xyz(jacobians_->points[i].x, jacobians_->points[i].y,
                      jacobians_->points[i].z);
         residual_(i) = LIDAR_SCALE * jacobians_->points[i].intensity;
-
+        // TODO:以下求解雅可比的详细推导还没有搞清楚
+        // 在迭代的过程中linState_是一直被更新的量
         Hk_.block<1, 3>(i, GlobalState::att_) =
             coff_xyz.transpose() *
             (-linState_.qbn_.toRotationMatrix() * skew(P2xyz)) *
             Rinvleft(-axis);
         Hk_.block<1, 3>(i, GlobalState::pos_) =
-            coff_xyz.transpose() * M3D::Identity();
+            coff_xyz.transpose() * M3D::Identity();// TODO:是不是少了一个姿态外参的逆和系数s？
       }
 
       // Set the measurement covariance matrix
@@ -552,11 +559,14 @@ class StateEstimator {
       Py_ =
           Hk_ * Pk_ * Hk_.transpose() + Rk_;  // S = H * P * H.transpose() + R;
       Pyinv_.setIdentity();                   // solve Ax=B
-      Py_.llt().solveInPlace(Pyinv_);
+      Py_.llt().solveInPlace(Pyinv_);// 求逆
       Kk_ = Pk_ * Hk_.transpose() * Pyinv_;  // K = P*H.transpose()*S.inverse()
 
-      filterState.boxMinus(linState_, difVecLinInv_);
-      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;// delta
+      // TODO:计算相对位姿误差的预测量？
+      // linState_相当于是一直被更新的对相对姿态更好的估计。新状态与纯IMU预测filterState相比，之间的差就是对误差的估计（即预测应该被修正的量，一开始为0）
+      filterState.boxMinus(linState_, difVecLinInv_);// filterState是通过IMU对相对位姿的预测
+      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;// 对误差进行更新
+      // 以上对位姿误差进行了更新
 
       // Divergence determination
       bool hasNaN = false;
@@ -580,10 +590,10 @@ class StateEstimator {
       }
 
       // Update the state
-      linState_.boxPlus(updateVec_, linState_);
+      linState_.boxPlus(updateVec_, linState_);// 将相对位姿误差增加到相对位姿上，得到更加准确的相对位姿
 
       updateVecNorm_ = updateVec_.norm();
-      if (updateVecNorm_ <= 1e-2) {
+      if (updateVecNorm_ <= 1e-2) { // 判断位姿误差是否足够小
         hasConverged = true;
       }
 
@@ -603,9 +613,9 @@ class StateEstimator {
     } else {
       // Update only one time
       IKH_ = Eigen::Matrix<double, 18, 18>::Identity() - Kk_ * Hk_;
-      Pk_ = IKH_ * Pk_ * IKH_.transpose() + Kk_ * Rk_ * Kk_.transpose();
+      Pk_ = IKH_ * Pk_ * IKH_.transpose() + Kk_ * Rk_ * Kk_.transpose();// 对相对姿态误差协方差进行更新
       enforceSymmetry(Pk_);
-      filter_->update(linState_, Pk_);
+      filter_->update(linState_, Pk_);// 用迭代出来的最新位姿和误差方差更新滤波器
     }
   }
 
@@ -620,10 +630,10 @@ class StateEstimator {
     globalState_.rn_ = globalState_.qbn_ * filterState.rn_ + globalState_.rn_;
     globalState_.qbn_ = globalState_.qbn_ * filterState.qbn_;
     globalState_.vn_ =
-        globalState_.qbn_ * filterState.qbn_.inverse() * filterState.vn_;
+        globalState_.qbn_ * filterState.qbn_.inverse() * filterState.vn_;// 注意此时globalState_.qbn_已经更新到当前时刻了
     globalState_.ba_ = filterState.ba_;
     globalState_.bw_ = filterState.bw_;
-    globalState_.gn_ = globalState_.qbn_ * filterState.gn_;
+    globalState_.gn_ = globalState_.qbn_ * filterState.gn_;// TODO:这里应该缺一个filterState.qbn_.inverse()吧
   }
 
   void undistortPcl(ScanPtr scan) {
@@ -842,13 +852,13 @@ class StateEstimator {
       ScanPtr lastScan, ScanPtr newScan,
       pcl::PointCloud<PointType>::Ptr keypoints,
       pcl::PointCloud<PointType>::Ptr jacobianCoff, int iterCount) {
-    int surfPointsFlatNum = newScan->surfPointsFlat_->points.size();// TODO:last scan吧？
+    int surfPointsFlatNum = newScan->surfPointsFlat_->points.size();
 
     for (int i = 0; i < surfPointsFlatNum; i++) {
       PointType pointSel;
       PointType coeff, tripod1, tripod2, tripod3;
 
-      transformToStart(&newScan->surfPointsFlat_->points[i], &pointSel);
+      transformToStart(&newScan->surfPointsFlat_->points[i], &pointSel);// 对优化量进行插值并将点转换到起始时刻
 
       pcl::PointCloud<PointType>::Ptr laserCloudSurfLast =
           lastScan->surfPointsLessFlat_;
@@ -863,7 +873,7 @@ class StateEstimator {
         if (pointSearchSqDis[0] < NEAREST_FEATURE_SEARCH_SQ_DIST) {
           closestPointInd = pointSearchInd[0];
           int closestPointScan =
-              int(laserCloudSurfLast->points[closestPointInd].intensity);
+              int(laserCloudSurfLast->points[closestPointInd].intensity);// 强度的整数部分是所在线数
 
           float pointSqDis, minPointSqDis2 = NEAREST_FEATURE_SEARCH_SQ_DIST,
                             minPointSqDis3 = NEAREST_FEATURE_SEARCH_SQ_DIST;
@@ -891,7 +901,7 @@ class StateEstimator {
                 minPointSqDis3 = pointSqDis;
                 minPointInd3 = j;
               }
-            }// 存在三点共线的几率，这里应该共线找一个，不共线找一个
+            }// 共线找一个，不共线找一个
           }
 
           for (int j = closestPointInd - 1; j >= 0; j--) {
@@ -937,7 +947,7 @@ class StateEstimator {
         V3D P3xyz(tripod3.x, tripod3.y, tripod3.z);
 
         V3D M = math_utils::skew(P1xyz - P2xyz) * (P1xyz - P3xyz);// 叉乘axb=(ax)b，法向
-        double r = (P0xyz - P1xyz).transpose() * M;
+        double r = (P0xyz - P1xyz).transpose() * M;// 点乘
         double m = M.norm();
         float res = r / m;// 高，误差
 
@@ -958,7 +968,7 @@ class StateEstimator {
           coeff.intensity = s * res;
 
           keypoints->push_back(newScan->surfPointsFlat_->points[i]);
-          jacobianCoff->push_back(coeff);// 雅可比和残差，TODO:不过这里的雅可比没有考虑transformToStart
+          jacobianCoff->push_back(coeff);// 雅可比和残差，不过这里的雅可比是相对于pointSelt的坐标的
         }
       }
     }
@@ -1074,14 +1084,15 @@ class StateEstimator {
     }
   }
 
+  // 根据优化中量相对位姿和时间戳，将点转换到起始时刻
   // Undistort point cloud to the start frame
   void transformToStart(PointType const* const pi, PointType* const po) {
     double s = (1.f / SCAN_PERIOD) * (pi->intensity - int(pi->intensity));
 
     V3D P2xyz(pi->x, pi->y, pi->z);
-    V3D phi = Quat2axis(linState_.qbn_);
+    V3D phi = Quat2axis(linState_.qbn_);// linState_为需要优化的相对位姿
     Q4D R21xyz = axis2Quat(s * phi);
-    R21xyz.normalized();
+    R21xyz.normalized();// TODO:这里是bug，应该是R21xyz.normalize();
     V3D T112xyz = s * linState_.rn_;
     V3D P1xyz = R21xyz * P2xyz + T112xyz;
 
@@ -1125,6 +1136,7 @@ class StateEstimator {
     po->intensity = pi->intensity;
   }
 
+  // 点云校正到终止时刻，对点云和当前全局位姿进行坐标习惯交换（可能是为了使用mapping模块）
   void updatePointCloud() {
     scan_new_->cornerPointsLessSharpYZX_->clear();
     scan_new_->surfPointsLessFlatYZX_->clear();
@@ -1484,6 +1496,7 @@ class StateEstimator {
   pcl::PointCloud<PointType>::Ptr jacobianCoffCorns;
   pcl::PointCloud<PointType>::Ptr jacobianCoffSurfs;
 
+  // 全局位姿
   // !@Global transformation from the original scan-frame to current scan-frame
   GlobalState globalState_;
   // !@Relative transformation from scan0-frame t0 scan1-frame

@@ -201,8 +201,8 @@ class StatePredictor {
   void update(const GlobalState& state,
               const Eigen::Matrix<double, GlobalState::DIM_OF_STATE_,
                                   GlobalState::DIM_OF_STATE_>& covariance) {
-    state_ = state;
-    covariance_ = covariance;
+    state_ = state;// 用迭代后的相对位姿更新滤波器里保存的相对位姿，TODO:怎么用？
+    covariance_ = covariance;// 更新协方差
   }
 
   void initialization(double time, const V3D& rn, const V3D& vn, const Q4D& qbn,
@@ -340,21 +340,23 @@ class StatePredictor {
 
       covariance_.setZero();
       covariance_.block<3, 3>(GlobalState::pos_, GlobalState::pos_) =
-          covPos.asDiagonal();  // pos
+          covPos.asDiagonal();  // pos 位置和速度协方差初始化
       covariance_.block<3, 3>(GlobalState::vel_, GlobalState::vel_) =
-          state_.qbn_.inverse() * vel_cov * state_.qbn_;  // vel
+          state_.qbn_.inverse() * vel_cov * state_.qbn_;  // vel 速度协方差传递
       covariance_.block<3, 3>(GlobalState::att_, GlobalState::att_) =
           V3D(covRoll, covPitch, covYaw).asDiagonal();  // att
       covariance_.block<3, 3>(GlobalState::acc_, GlobalState::acc_) = acc_cov;
       covariance_.block<3, 3>(GlobalState::gyr_, GlobalState::gyr_) = gyr_cov;
       covariance_.block<3, 3>(GlobalState::gra_, GlobalState::gra_) =
-          state_.qbn_.inverse() * gra_cov * state_.qbn_;
+          state_.qbn_.inverse() * gra_cov * state_.qbn_;// 重力协方差传递
 
       state_.rn_.setZero();
       state_.vn_ = state_.qbn_.inverse() * state_.vn_;
       state_.qbn_.setIdentity();
       state_.gn_ = state_.qbn_.inverse() * state_.gn_;
-      state_.gn_ = state_.gn_ * 9.81 / state_.gn_.norm();
+      state_.gn_ = state_.gn_ * 9.81 / state_.gn_.norm();// 对重力做归一化，保证大小为9.81
+      // 以上，对相对位置和姿态归零，速度和重力保留但是转换到当前时刻姿态下，bias不变
+      // 相应的，位置和姿态的协方差初始化，速度和重力的协方差传递，bias方差不变
       // initializeCovariance(1);
     }
   }
@@ -369,7 +371,7 @@ class StatePredictor {
 
   inline bool isInitialized() { return flag_init_state_; }
 
-  GlobalState state_;// TODO:到底是两帧之间的相对位姿，还是相对第一帧的位姿呢？
+  GlobalState state_;// 绝对是两帧之间的相对位姿
   double time_;
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_>
       F_;
