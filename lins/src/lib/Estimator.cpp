@@ -178,7 +178,7 @@ void LinsFusion::publishTopics() {
   if (pubLaserCloudCornerLast.getNumSubscribers() != 0) {
     publishCloudMsg(pubLaserCloudCornerLast,
                     estimator->scan_last_->cornerPointsLessSharpYZX_,
-                    ros::Time().fromSec(scan_time_), "/camera");
+                    ros::Time().fromSec(scan_time_), "/camera");// 把点云发布封装成函数
   }
   if (pubLaserCloudSurfLast.getNumSubscribers() != 0) {
     publishCloudMsg(pubLaserCloudSurfLast,
@@ -191,6 +191,7 @@ void LinsFusion::publishTopics() {
                     ros::Time().fromSec(scan_time_), "/camera");
   }
 
+  // yzx指的是xyz三轴在在原来坐标系中的对应轴
   // Publish the estimated 6-DOF odometry by a YZX-frame convention (e.g. camera
   // frame convention), where Z points forward, X poins leftward, and Y poitns
   // upwards.
@@ -221,11 +222,7 @@ bool LinsFusion::processPointClouds() {
   cloud_msgs::cloud_info cloudInfoMsg = cloudInfoBuf_.itMeas_->second;
 
   imuBuf_.getLastTime(last_imu_time_);
-<<<<<<< HEAD
-  if (last_imu_time_ < scan_time_) { // 最新的imu数据，要涵盖scan。如果不足以完成scan的一个周期，直接返回。
-=======
   if (last_imu_time_ < scan_time_) { // 如果imu不能覆盖第一帧新点云，退出。TODO:应该在外面就提前退出的
->>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
     // ROS_WARN("Wait for more IMU measurement!");
     return false;
   }
@@ -238,32 +235,25 @@ bool LinsFusion::processPointClouds() {
   while (estimator->getTime() < scan_time_ &&
          (imuBuf_.itMeas_ = imuBuf_.measMap_.upper_bound(
               estimator->getTime())) != imuBuf_.measMap_.end()) {
-<<<<<<< HEAD
-    // 计算更新时长dt，一般是imu的周期，横跨两个点云的imu会被使用两次
-=======
     // 积分时长从上一时刻开始，到imu和点云中的较小时刻为止
     // 因此，跨点云的imu消息会被两次积分
->>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
     double dt =
         std::min(imuBuf_.itMeas_->first, scan_time_) - estimator->getTime();
     Imu imu = imuBuf_.itMeas_->second;
-<<<<<<< HEAD
     estimator->processImu(dt, imu.acc, imu.gyr);// 车体坐标系下的imu
   }// 到这里把scan_time前的imu数据都用于预积分了
-=======
-    estimator->processImu(dt, imu.acc, imu.gyr);// 这里的imu已经是车体坐标系下的了
-  }
->>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
+  // 以上，利用IMU数据预测了相对于上一关键帧的位姿。计算了误差状态的协方差
 
   Imu imu;
   imuBuf_.getLastMeas(imu);
 
+  // 用点云对相对位姿，误差状态，全局位姿以及last点云进行更新
   // Update the iterative-ESKF using a new PCL
   estimator->processPCL(scan_time_, imu, distortedPointCloud, cloudInfoMsg,
                         outlierPointCloud);
 
   // Clear all measurements before the current time stamp
-  imuBuf_.clean(estimator->getTime());
+  imuBuf_.clean(estimator->getTime());// 横跨的IMU会被保留
   pclBuf_.clean(estimator->getTime());
   cloudInfoBuf_.clean(estimator->getTime());
   outlierBuf_.clean(estimator->getTime());
@@ -284,15 +274,10 @@ void LinsFusion::performStateEstimation() {
   }
 
   // Iterate all PCL measurements in the buffer
-<<<<<<< HEAD
-  pclBuf_.getLastTime(last_scan_time_);// TODO:如果此时存在多个scan，直接处理最后一个
-  while (!pclBuf_.empty() && estimator->getTime() < last_scan_time_) {
-=======
-  pclBuf_.getLastTime(last_scan_time_);// TODO:在处理的过程中可能收到新的点云，但并没有再更新// 如果存在至少一帧新激光，那么estimator需要被更新
+  pclBuf_.getLastTime(last_scan_time_);// 存在至少一帧新激光，那么estimator需要被更新。在处理的过程中可能收到新的点云，但不会被处理
   while (!pclBuf_.empty() && estimator->getTime() < last_scan_time_) { 
->>>>>>> 256e42b4f2f0d6a16024af18f4b14fa2b94bcce7
     TicToc ts_total;
-    if (!processPointClouds()) break;
+    if (!processPointClouds()) break;// 对一组IMU和点云信息进行处理
     double time_total = ts_total.toc();
     duration_ = (duration_ * scan_counter_ + time_total) / (scan_counter_ + 1);
     scan_counter_++;
