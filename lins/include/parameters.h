@@ -152,6 +152,9 @@ extern V3D INIT_BW;
 extern V3D INIT_TBL;
 extern Q4D INIT_RBL;
 
+// 下面是对全局函数的声明，.cpp文件中对函数进行定义，这里的声明可以被include使用
+// 同时，.cpp文件中读取变量保存在了.cpp文件的变量中，因此，需要有一个头文件来声明extern，从而使得这个.cpp文件中的变量可以被外部使用（同一个executable）
+
 void readParameters(ros::NodeHandle& n);
 
 void readV3D(cv::FileStorage* file, const std::string& name, V3D& vec_eigen);

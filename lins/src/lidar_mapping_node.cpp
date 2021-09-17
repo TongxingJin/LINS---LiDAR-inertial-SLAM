@@ -259,6 +259,7 @@ class MappingHandler {
     pubOdomXYZAftMapped =
         pnh.advertise<nav_msgs::Odometry>("/aft_xyz_mapped_to_init", 5);
 
+    // 接收点云并标记标志位
     subLaserCloudCornerLast = pnh.subscribe<sensor_msgs::PointCloud2>(
         "/laser_cloud_corner_last", 2,
         &MappingHandler::laserCloudCornerLastHandler, this);
@@ -268,6 +269,7 @@ class MappingHandler {
     subOutlierCloudLast = pnh.subscribe<sensor_msgs::PointCloud2>(
         "/outlier_cloud_last", 2, &MappingHandler::laserCloudOutlierLastHandler,
         this);
+    // 接收位姿，姿态转换成rpy保存到transformSum，标记标志位    
     subLaserOdometry = pnh.subscribe<nav_msgs::Odometry>(
         "/laser_odom_to_init", 5, &MappingHandler::laserOdometryHandler, this);
     subImu = pnh.subscribe<sensor_msgs::Imu>("no_imu", 50,

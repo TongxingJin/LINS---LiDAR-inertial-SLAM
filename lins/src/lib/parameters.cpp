@@ -83,8 +83,8 @@ T readParam(ros::NodeHandle& n, std::string name) {
   return ans;
 }
 
-// 读取参数到全局变量
-// 这些在本文件中刚声明，并且在头文件中声明extern，便于再被其他文件直接include
+// 读取参数到本文件中的全局变量中。
+// 为了在其他文件中使用读进来的变量，需要extern这些变量，恰好将extern写在了本文件的头文件中以便一同使用
 void readParameters(ros::NodeHandle& n) {
   std::string config_file;
   config_file = readParam<std::string>(n, "config_file");// 从参数服务器获取配置参数的路径
