@@ -124,10 +124,10 @@ class MappingHandler {
   deque<pcl::PointCloud<PointType>::Ptr> surroundingSurfCloudKeyFrames;
   deque<pcl::PointCloud<PointType>::Ptr> surroundingOutlierCloudKeyFrames;
 
-  PointType previousRobotPosPoint;
+  PointType previousRobotPosPoint;// 上一关键帧的位姿
   PointType currentRobotPosPoint;
 
-  pcl::PointCloud<PointType>::Ptr cloudKeyPoses3D;
+  pcl::PointCloud<PointType>::Ptr cloudKeyPoses3D;// 历史关键帧的位置
   pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 
   pcl::PointCloud<PointType>::Ptr surroundingKeyPoses;
@@ -196,11 +196,11 @@ class MappingHandler {
   bool newLaserCloudOutlierLast;
 
   float transformLast[6];
-  float transformSum[6];
-  float transformIncre[6];
-  float transformTobeMapped[6];
-  float transformBefMapped[6];
-  float transformAftMapped[6];
+  float transformSum[6];// odo回调保存的位置，即当前帧的里程计位姿
+  float transformIncre[6];// 连续两帧里程计位姿之间的相对位姿
+  float transformTobeMapped[6];// 当前帧不断被优化的位姿
+  float transformBefMapped[6];// 上一帧的里程计位姿
+  float transformAftMapped[6];// 上一帧的最优位姿
 
   int imuPointerFront;
   int imuPointerLast;
@@ -410,6 +410,7 @@ class MappingHandler {
     latestFrameID = 0;
   }
 
+  // 根据上一帧，里程计的偏移量，优化当前里程计位姿
   void transformAssociateToMap() {
     float x1 =
         cos(transformSum[1]) * (transformBefMapped[3] - transformSum[3]) -
@@ -1201,9 +1202,10 @@ class MappingHandler {
   }
 
   void extractSurroundingKeyFrames() {
-    if (cloudKeyPoses3D->points.empty() == true) return;
+    if (cloudKeyPoses3D->points.empty() == true) return;// 如果没有历史关键帧
 
-    if (loopClosureEnableFlag == true) {
+    if (loopClosureEnableFlag == true) { // 如果开了回环检测
+      // 如果近邻不够多，按照时间逆序重新累积周围地图
       if (recentCornerCloudKeyFrames.size() < surroundingKeyframeSearchNum) {
         recentCornerCloudKeyFrames.clear();
         recentSurfCloudKeyFrames.clear();
@@ -1212,8 +1214,9 @@ class MappingHandler {
         for (int i = numPoses - 1; i >= 0; --i) {
           int thisKeyInd = (int)cloudKeyPoses3D->points[i].intensity;
           PointTypePose thisTransformation =
-              cloudKeyPoses6D->points[thisKeyInd];
+              cloudKeyPoses6D->points[thisKeyInd];// TODO:这是种什么对应关系？好像是一一对应的啊
           updateTransformPointCloudSinCos(&thisTransformation);
+          // 根据坐标将雷达点云转换到地图坐标系下
           recentCornerCloudKeyFrames.push_front(
               transformPointCloud(cornerCloudKeyFrames[thisKeyInd]));
           recentSurfCloudKeyFrames.push_front(
@@ -1222,8 +1225,9 @@ class MappingHandler {
               transformPointCloud(outlierCloudKeyFrames[thisKeyInd]));
           if (recentCornerCloudKeyFrames.size() >= surroundingKeyframeSearchNum)
             break;
-        }
+          }
       } else {
+        // 如果cloudKeyPoses3D中有更新的位姿，周围地图更新一帧
         if (latestFrameID != cloudKeyPoses3D->points.size() - 1) {
           recentCornerCloudKeyFrames.pop_front();
           recentSurfCloudKeyFrames.pop_front();
@@ -1240,7 +1244,7 @@ class MappingHandler {
               transformPointCloud(outlierCloudKeyFrames[latestFrameID]));
         }
       }
-
+      // 累加成周围的点云地图
       for (int i = 0; i < recentCornerCloudKeyFrames.size(); ++i) {
         *laserCloudCornerFromMap += *recentCornerCloudKeyFrames[i];
         *laserCloudSurfFromMap += *recentSurfCloudKeyFrames[i];
@@ -1258,11 +1262,15 @@ class MappingHandler {
         surroundingKeyPoses->points.push_back(
             cloudKeyPoses3D->points[pointSearchInd[i]]);
       downSizeFilterSurroundingKeyPoses.setInputCloud(surroundingKeyPoses);
-      downSizeFilterSurroundingKeyPoses.filter(*surroundingKeyPosesDS);
+      downSizeFilterSurroundingKeyPoses.filter(*surroundingKeyPosesDS);// 点的强度的整数部分为其在cloudKeyPoses3D中的索引
 
+      // 以下两个大循环，如果surroundingExistingKeyPosesID还存在但是不需要了就删除；
+      // 如果需要，但是surroundingExistingKeyPosesID中没有的需要新增
+      // 目的是通过增减，更新周围地图
       int numSurroundingPosesDS = surroundingKeyPosesDS->points.size();
       for (int i = 0; i < surroundingExistingKeyPosesID.size(); ++i) {
         bool existingFlag = false;
+        // 判断第surroundingExistingKeyPosesID[i]帧是否还需要
         for (int j = 0; j < numSurroundingPosesDS; ++j) {
           if (surroundingExistingKeyPosesID[i] ==
               (int)surroundingKeyPosesDS->points[j].intensity) {
@@ -1279,7 +1287,7 @@ class MappingHandler {
               surroundingSurfCloudKeyFrames.begin() + i);
           surroundingOutlierCloudKeyFrames.erase(
               surroundingOutlierCloudKeyFrames.begin() + i);
-          --i;
+          --i;// 删除本位后，与++1抵消
         }
       }
 
@@ -1316,6 +1324,7 @@ class MappingHandler {
       }
     }
 
+    // 对周围地图降采样
     downSizeFilterCorner.setInputCloud(laserCloudCornerFromMap);
     downSizeFilterCorner.filter(*laserCloudCornerFromMapDS);
     laserCloudCornerFromMapDSNum = laserCloudCornerFromMapDS->points.size();
@@ -1654,7 +1663,7 @@ class MappingHandler {
   }
 
   void saveKeyFramesAndFactor() {
-    currentRobotPosPoint.x = transformAftMapped[3];
+    currentRobotPosPoint.x = transformAftMapped[3];// TODO:到这里transformAftMapped已经被更新过了吧？
     currentRobotPosPoint.y = transformAftMapped[4];
     currentRobotPosPoint.z = transformAftMapped[5];
 
@@ -1665,7 +1674,7 @@ class MappingHandler {
                  (previousRobotPosPoint.y - currentRobotPosPoint.y) +
              (previousRobotPosPoint.z - currentRobotPosPoint.z) *
                  (previousRobotPosPoint.z - currentRobotPosPoint.z)) < 0.3) {
-      saveThisKeyFrame = false;
+      saveThisKeyFrame = false;// 每0.3m保存一个关键帧
     }
 
     if (saveThisKeyFrame == false && !cloudKeyPoses3D->points.empty()) return;
@@ -1673,6 +1682,7 @@ class MappingHandler {
     previousRobotPosPoint = currentRobotPosPoint;
 
     if (cloudKeyPoses3D->points.empty()) {
+      // 增加先验位姿
       gtSAMgraph.add(PriorFactor<Pose3>(
           0,
           Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0],
@@ -1695,9 +1705,10 @@ class MappingHandler {
                              transformAftMapped[1]),
                 Point3(transformAftMapped[5], transformAftMapped[3],
                        transformAftMapped[4]));
+      // 增加双边约束
       gtSAMgraph.add(BetweenFactor<Pose3>(
           cloudKeyPoses3D->points.size() - 1, cloudKeyPoses3D->points.size(),
-          poseFrom.between(poseTo), odometryNoise));
+          poseFrom.between(poseTo), odometryNoise));// cloudKeyPoses3D需要被新增，在下面才进行
       initialEstimate.insert(
           cloudKeyPoses3D->points.size(),
           Pose3(Rot3::RzRyRx(transformAftMapped[2], transformAftMapped[0],
@@ -1711,6 +1722,7 @@ class MappingHandler {
 
     gtSAMgraph.resize(0);
     initialEstimate.clear();
+    // 清除了因子图和被优化的变量，但是优化结果还在
 
     PointType thisPose3D;
     PointTypePose thisPose6D;
@@ -1718,12 +1730,12 @@ class MappingHandler {
 
     isamCurrentEstimate = isam->calculateEstimate();
     latestEstimate =
-        isamCurrentEstimate.at<Pose3>(isamCurrentEstimate.size() - 1);
+        isamCurrentEstimate.at<Pose3>(isamCurrentEstimate.size() - 1);// 全局优化出来的当前帧的位姿
 
     thisPose3D.x = latestEstimate.translation().y();
     thisPose3D.y = latestEstimate.translation().z();
     thisPose3D.z = latestEstimate.translation().x();
-    thisPose3D.intensity = cloudKeyPoses3D->points.size();
+    thisPose3D.intensity = cloudKeyPoses3D->points.size();// 也就是该点在vector中的索引，这里之所以保存索引是因为在不回环的情况下会对位姿做降采样，需要恢复出位姿对应的索引
     cloudKeyPoses3D->push_back(thisPose3D);
 
     thisPose6D.x = thisPose3D.x;
@@ -1805,6 +1817,8 @@ class MappingHandler {
 
   int lidarCounter = 0;
   double duration_ = 0;
+  // 200Hz的频率刷新，远大于雷达频率，能够保证数据能及时被处理
+  // 这里要保证函数整体运行的要足够快，避免没有处理完就被回调覆盖
   void run() {
     if (newLaserCloudCornerLast &&
         std::abs(timeLaserCloudCornerLast - timeLaserOdometry) < 0.005 &&
@@ -1818,20 +1832,20 @@ class MappingHandler {
       newLaserCloudOutlierLast = false;
       newLaserOdometry = false;
 
-      std::lock_guard<std::mutex> lock(mtx);
-
+      std::lock_guard<std::mutex> lock(mtx);// TODO:这里锁还在哪里出现？
+      // 每300ms才运行一次
       if (timeLaserOdometry - timeLastProcessing >= mappingProcessInterval) {
         TicToc ts_total;
 
         timeLastProcessing = timeLaserOdometry;
 
-        transformAssociateToMap();
+        transformAssociateToMap();// 根据上一帧的偏移量，计算当前最优位姿估计，其实也就是把scan2scan的结果在这里积分
 
-        extractSurroundingKeyFrames();
+        extractSurroundingKeyFrames();// 搜索周围关键帧，并拼接成map，对待是否回环存在不同的处理方式
 
         downsampleCurrentScan();
 
-        scan2MapOptimization();
+        scan2MapOptimization();// 位姿优化
 
         saveKeyFramesAndFactor();
 
@@ -1866,7 +1880,7 @@ int main(int argc, char** argv) {
 
   parameter::readParameters(pnh);
 
-  MappingHandler mappingHandler(nh, pnh);
+  MappingHandler mappingHandler(nh, pnh);// 回调函数接受点云等转存成pcl并标记，接收位姿并标记
   ;
 
   std::thread loopthread(&MappingHandler::loopClosureThread, &mappingHandler);
