@@ -214,6 +214,7 @@ class TransformFusion {
         (-sin(transformMapped[1]) * x2 + cos(transformMapped[1]) * z2);
   }
 
+  // 里程计位姿，交换坐标系，加上偏移量，再次发布（被Estimator订阅，但是好像并未使用）
   void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr& laserOdometry) {
     currentHeader = laserOdometry->header;
 
@@ -230,7 +231,7 @@ class TransformFusion {
     transformSum[4] = laserOdometry->pose.pose.position.y;
     transformSum[5] = laserOdometry->pose.pose.position.z;
 
-    transformAssociateToMap();
+    transformAssociateToMap();// 里程计位姿加上偏移transformMapped
 
     geoQuat = tf::createQuaternionMsgFromRollPitchYaw(
         transformMapped[2], -transformMapped[0], -transformMapped[1]);
@@ -243,7 +244,7 @@ class TransformFusion {
     laserOdometry2.pose.pose.position.x = transformMapped[3];
     laserOdometry2.pose.pose.position.y = transformMapped[4];
     laserOdometry2.pose.pose.position.z = transformMapped[5];
-    pubLaserOdometry2.publish(laserOdometry2);
+    pubLaserOdometry2.publish(laserOdometry2);// 再次发布
 
     laserOdometryTrans2.stamp_ = laserOdometry->header.stamp;
     laserOdometryTrans2.setRotation(
@@ -253,6 +254,7 @@ class TransformFusion {
     tfBroadcaster2.sendTransform(laserOdometryTrans2);
   }
 
+  // scan2map位姿，交换坐标系后保存。这里是为了上面的回调中计算odo的漂移量
   void odomAftMappedHandler(const nav_msgs::Odometry::ConstPtr& odomAftMapped) {
     double roll, pitch, yaw;
     geometry_msgs::Quaternion geoQuat = odomAftMapped->pose.pose.orientation;
