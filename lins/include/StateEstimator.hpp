@@ -250,7 +250,7 @@ class StateEstimator {
         gyr_0_ = gyr;
         break;
       case STATUS_RUNNING:
-        filter_->predict(dt, acc, gyr, true);
+        filter_->predict(dt, acc, gyr, true);// 计算新的相对位姿，更新误差状态转移矩阵和协方差
         break;
       default:
         break;
@@ -364,7 +364,7 @@ class StateEstimator {
     kdtreeCorner_->setInputCloud(scan_new_->cornerPointsLessSharp_);
     kdtreeSurf_->setInputCloud(scan_new_->surfPointsLessFlat_);
 
-    pos_.setZero();// 这里也有个状态
+    pos_.setZero();// 这里也有个状态， TODO:作用？
     vel_.setZero();
     quad_.setIdentity();
 
@@ -390,9 +390,8 @@ class StateEstimator {
     Q4D ql;
     V3D v0, v1, ba0, bw0;
     ba0.setZero();
-    // 计算相对上一关键帧的姿态和位置
-    ql = preintegration_->delta_q;
-    // TODO:这里只是加速度带来的位置的增量，是否需要考虑速度带来的位置的增量？??还是因为初始时刻速度为0？
+    ql = preintegration_->delta_q;// 第一帧激光之后，IMU在与积分器中积分的姿态
+    // 加速度的积分，包含了重力，需要去除
     pl = preintegration_->delta_p +
          0.5 * linState_.gn_ * preintegration_->sum_dt *
              preintegration_->sum_dt -
@@ -403,7 +402,7 @@ class StateEstimator {
 
     // Calculate initial state using relative transform calculated by point
     // clouds and that by IMU preintegration
-    estimateInitialState(pl, ql, v0, v1, ba0, bw0);// 根据相对位置和时间，计算速度v0v1
+    estimateInitialState(pl, ql, v0, v1, ba0, bw0);// 根据相对位置和时间，计算状态量-速度v0v1
 
     // 由于kalman的状态是相对位姿，因此只有获得了两帧后才能进行kalman的初始化
     // 这里主要是对相对位置和速度等进行了初始化（角度没有用点云匹配的结果，而是单位阵）
@@ -449,13 +448,14 @@ class StateEstimator {
       return false;
     }
 
-    // 迭代对滤波器的状态进行更新(实际的更新过程并不是在filter中进行)
+    // 迭代对相对位置和误差状态协方差进行迭代更新，保存在linState_和Pk_中，并update到滤波器中
     // Update states
     performIESKF();
     // 相对姿态累积成全局姿态
     // Update global transform by estimated relative transform
     integrateTransformation();
-    // 初始化滤波器中保存的相对位姿和协方差
+    // 当前最优的状态和方差估计都是相对于上一关键帧坐标系的，转换到当前位姿下
+    // 其中相对位姿会归零
     filter_->reset(1);
 
     // 根据滤波器得到的当前坐标系下重力的分量，重新计算roll和pitch，更新到全局姿态
@@ -477,11 +477,12 @@ class StateEstimator {
     return true;
   }
 
+  // 对相对姿态和误差状态协方差进行迭代更新，结果都是相对于上一关键帧的
   void performIESKF() {
     // Store current state and perform initialization
     Pk_ = filter_->covariance_;// 使用IMU一直更新的相对位姿误差协方差矩阵
     GlobalState filterState = filter_->state_;// 相对上一关键帧的位姿
-    linState_ = filterState;// linState_会一直被更新
+    linState_ = filterState;// linState_是对点云相对变换的预测，会一直被更新
 
     double residualNorm = 1e6;
     bool hasConverged = false;
@@ -555,7 +556,9 @@ class StateEstimator {
       }
       Rk_ = cov.asDiagonal();
 
+      // 对应公式（15）
       // Kalman filter update. Details can be referred to ROVIO
+      // Pk_为误差状态协方差，是使用IMU积分得到的，这里进行的是迭代更新
       Py_ =
           Hk_ * Pk_ * Hk_.transpose() + Rk_;  // S = H * P * H.transpose() + R;
       Pyinv_.setIdentity();                   // solve Ax=B
@@ -564,9 +567,10 @@ class StateEstimator {
 
       // TODO:计算相对位姿误差的预测量？
       // linState_相当于是一直被更新的对相对姿态更好的估计。新状态与纯IMU预测filterState相比，之间的差就是对误差的估计（即预测应该被修正的量，一开始为0）
-      filterState.boxMinus(linState_, difVecLinInv_);// filterState是通过IMU对相对位姿的预测
-      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;// 对误差进行更新
-      // 以上对位姿误差进行了更新
+      filterState.boxMinus(linState_, difVecLinInv_);// filterState是通过IMU对相对位姿的预测，difVecLinInv_是对误差状态的估计
+      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;// 对误差进行更新，对应论文公式（16-17）
+      // 以上对位姿误差状态进行了迭代更新
+      // 但是没有对误差状态协方差进行更新（在下面进行）
 
       // Divergence determination
       bool hasNaN = false;
@@ -589,6 +593,7 @@ class StateEstimator {
         break;
       }
 
+      // 对应论文公式（4）
       // Update the state
       linState_.boxPlus(updateVec_, linState_);// 将相对位姿误差增加到相对位姿上，得到更加准确的相对位姿
 
@@ -599,6 +604,7 @@ class StateEstimator {
 
       residualNorm = residual_.norm();
     }
+    // 至此，状态linState_已经被更新成最优，误差状态updateVec_也已经最优
 
     // If diverges, swtich to traditional ICP method to get a rough relative
     // transformation. Otherwise, update the error-state covariance matrix
@@ -609,13 +615,13 @@ class StateEstimator {
       estimateTransform(scan_last_, scan_new_, t, q);
       filterState.rn_ = t;
       filterState.qbn_ = q;
-      filter_->update(filterState, Pk_);
+      filter_->update(filterState, Pk_);// 更新状态和误差状态协方差
     } else {
       // Update only one time
       IKH_ = Eigen::Matrix<double, 18, 18>::Identity() - Kk_ * Hk_;
       Pk_ = IKH_ * Pk_ * IKH_.transpose() + Kk_ * Rk_ * Kk_.transpose();// 对相对姿态误差协方差进行更新
       enforceSymmetry(Pk_);
-      filter_->update(linState_, Pk_);// 用迭代出来的最新位姿和误差方差更新滤波器
+      filter_->update(linState_, Pk_);// 用迭代出来的最新位姿和误差方差更新滤波器，但是都是在上一关键帧坐标系下的
     }
   }
 
@@ -624,9 +630,10 @@ class StateEstimator {
     roll = sign(fbib.z()) * asin(fbib.y() / G0);
   }
 
+  // 对全局位置，姿态，速度，重力，bias进行更新，其中bias不涉及坐标系变换
   // Update the gloabl state by the new relative transformation
   void integrateTransformation() {
-    GlobalState filterState = filter_->state_;
+    GlobalState filterState = filter_->state_;// 相对位姿状态
     globalState_.rn_ = globalState_.qbn_ * filterState.rn_ + globalState_.rn_;
     globalState_.qbn_ = globalState_.qbn_ * filterState.qbn_;
     globalState_.vn_ =
@@ -1500,7 +1507,7 @@ class StateEstimator {
   // !@Global transformation from the original scan-frame to current scan-frame
   GlobalState globalState_;
   // !@Relative transformation from scan0-frame t0 scan1-frame
-  GlobalState linState_;// 也是点云匹配的优化变量
+  GlobalState linState_;// 点云匹配中的优化变量
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, 1> difVecLinInv_;
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, 1> updateVec_;
   double updateVecNorm_ = 0.0;

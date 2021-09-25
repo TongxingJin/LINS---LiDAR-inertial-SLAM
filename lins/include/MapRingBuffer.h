@@ -71,7 +71,7 @@ class MapRingBuffer {
 
   void clear() { measMap_.clear(); }
 
-  void clean(double t) { // 这里只是删除了智能指针，但是该指针已经被复制和使用，释放也不在这里进行
+  void clean(double t) { // 这里只是删除了智能指针，在状态估计内部可能作为last还有复制
     while (measMap_.size() >= 1 && measMap_.begin()->first <= t) {
       measMap_.erase(measMap_.begin());
     }
