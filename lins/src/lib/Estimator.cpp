@@ -144,7 +144,7 @@ void LinsFusion::imuCallback(const sensor_msgs::Imu::ConstPtr& imuMsg) {
 
 void LinsFusion::processFirstPointCloud() {
   // Use the most recent poing cloud to initialize the estimator
-  pclBuf_.getLastTime(scan_time_);// 该imu信息也会是在scan_time后的第一条imu信息
+  pclBuf_.getLastTime(scan_time_);
 
   sensor_msgs::PointCloud2::ConstPtr pclMsg;
   pclBuf_.getLastMeas(pclMsg);
@@ -162,7 +162,7 @@ void LinsFusion::processFirstPointCloud() {
   // The latest IMU measurement records the inertial information when the new
   // point cloud is recorded
   Imu imu;
-  imuBuf_.getLastMeas(imu);
+  imuBuf_.getLastMeas(imu);// 该imu信息也会是在scan_time后的第一条imu信息
 
   // Initialize the iterative-ESKF by the first PCL
   estimator->processPCL(scan_time_, imu, distortedPointCloud, cloudInfoMsg,
@@ -222,7 +222,7 @@ bool LinsFusion::processPointClouds() {
   cloud_msgs::cloud_info cloudInfoMsg = cloudInfoBuf_.itMeas_->second;
 
   imuBuf_.getLastTime(last_imu_time_);
-  if (last_imu_time_ < scan_time_) { // 如果imu不能覆盖第一帧新点云，退出。TODO:应该在外面就提前退出的
+  if (last_imu_time_ < scan_time_) { // 如果imu不能覆盖第一帧新点云，退出。
     // ROS_WARN("Wait for more IMU measurement!");
     return false;
   }
@@ -241,11 +241,11 @@ bool LinsFusion::processPointClouds() {
         std::min(imuBuf_.itMeas_->first, scan_time_) - estimator->getTime();
     Imu imu = imuBuf_.itMeas_->second;
     estimator->processImu(dt, imu.acc, imu.gyr);// 车体坐标系下的imu
-  }// 到这里把scan_time前的imu数据都用于预积分了
-  // 以上，利用IMU数据预测了相对于上一关键帧的位姿。计算了误差状态的协方差
+  }// 到这里把状态推到了scan_time_之后
+  // 以上，利用IMU数据预测了相对于上一关键帧的位姿。计算了误差状态的状态转移矩阵
 
   Imu imu;
-  imuBuf_.getLastMeas(imu);
+  imuBuf_.getLastMeas(imu);// TODO:获取最新一个IMU而不是scan_time后第一个？
 
   // 用点云对相对位姿，误差状态，全局位姿以及last点云进行更新
   // Update the iterative-ESKF using a new PCL
@@ -266,7 +266,7 @@ void LinsFusion::performStateEstimation() {
   // 需要IMU和点云数据都具备才会执行
   if (imuBuf_.empty() || pclBuf_.empty() || cloudInfoBuf_.empty() ||
       outlierBuf_.empty())
-    return;// 如果imu的时间戳没能覆盖第一个点云，也应该及时返回，不要再往下处理了
+    return;// 有一个条件不满足都会返回
   
   if (!estimator->isInitialized()) {
     processFirstPointCloud();

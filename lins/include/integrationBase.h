@@ -58,7 +58,7 @@ class IntegrationBase {
     propagate(dt, acc, gyr);
   }
 
-  // 预积分
+  // 预积分，推导新的状态，更新误差状态转移矩阵
   void midPointIntegration(
       double _dt, const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
       const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
@@ -68,6 +68,7 @@ class IntegrationBase {
       Eigen::Quaterniond &result_delta_q, Eigen::Vector3d &result_delta_v,
       Eigen::Vector3d &result_linearized_ba,
       Eigen::Vector3d &result_linearized_bg, bool update_jacobian) {
+    // 推导相对上一关键帧的位姿    
     Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);// 上一时刻的加速度转换到上一关键帧
     Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;// 角速度的中值
     result_delta_q =
@@ -76,13 +77,15 @@ class IntegrationBase {
     Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);// 转换到上一关键帧
     Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);// 在参考系下加速度的均值，不含bias，包含了重力
     result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;// 相对于上一关键帧
-    result_delta_v = delta_v + un_acc * _dt;// 都是相对于上一estimator时刻的
+    result_delta_v = delta_v + un_acc * _dt;
 
     result_linearized_ba = linearized_ba;
     result_linearized_bg = linearized_bg;
 
-    // TODO:对雅可比矩阵进行迭代
+    // 推导相对于上一关键帧的误差状态转移矩阵
+    // 以下对应论文中的公式6-11
     if (update_jacobian) {
+      // 对应公式8-9
       Vector3d w_x =
           0.5 * (_gyr_0 + _gyr_1) - linearized_bg;  // angular_velocity
       Vector3d a_0_x =
@@ -90,7 +93,7 @@ class IntegrationBase {
       Vector3d a_1_x = _acc_1 - linearized_ba;
       Matrix3d R_w_x, R_a_0_x, R_a_1_x;
 
-      // 反对称阵
+      // 定义反对称阵
       R_w_x << 0, -w_x(2), w_x(1),  // [w-b]x, cross product
           w_x(2), 0, -w_x(0), -w_x(1), w_x(0), 0;
       R_a_0_x << 0, -a_0_x(2), a_0_x(1),  // [w-a]x
@@ -98,16 +101,18 @@ class IntegrationBase {
       R_a_1_x << 0, -a_1_x(2), a_1_x(1), a_1_x(2), 0, -a_1_x(0), -a_1_x(1),
           a_1_x(0), 0;
 
+      // 对应公式6、7、10
+      // 这里用了二阶积分（论文中是一阶），通过误差微分推导误差状态转移矩阵
       // the order of a and theta is exchanged. and F = I + F*dt + 0.5*F^2*dt^2
       MatrixXd F = MatrixXd::Zero(15, 15);
       F.block<3, 3>(GlobalState::pos_, GlobalState::pos_) =
           Matrix3d::Identity();
+      F.block<3, 3>(GlobalState::pos_, GlobalState::vel_) =
+          MatrixXd::Identity(3, 3) * _dt;
       F.block<3, 3>(GlobalState::pos_, GlobalState::att_) =
           -0.25 * delta_q.toRotationMatrix() * R_a_0_x * _dt * _dt +
           -0.25 * result_delta_q.toRotationMatrix() * R_a_1_x *
               (Matrix3d::Identity() - R_w_x * _dt) * _dt * _dt;
-      F.block<3, 3>(GlobalState::pos_, GlobalState::vel_) =
-          MatrixXd::Identity(3, 3) * _dt;
       F.block<3, 3>(GlobalState::pos_, GlobalState::acc_) =
           -0.25 *
           (delta_q.toRotationMatrix() + result_delta_q.toRotationMatrix()) *
@@ -115,11 +120,6 @@ class IntegrationBase {
       F.block<3, 3>(GlobalState::pos_, GlobalState::gyr_) =
           -0.25 * result_delta_q.toRotationMatrix() * R_a_1_x * _dt * _dt *
           -_dt;
-
-      F.block<3, 3>(GlobalState::att_, GlobalState::att_) =
-          Matrix3d::Identity() - R_w_x * _dt;
-      F.block<3, 3>(GlobalState::att_, GlobalState::gyr_) =
-          -1.0 * MatrixXd::Identity(3, 3) * _dt;
 
       F.block<3, 3>(GlobalState::vel_, GlobalState::att_) =
           -0.5 * delta_q.toRotationMatrix() * R_a_0_x * _dt +
@@ -130,15 +130,21 @@ class IntegrationBase {
       F.block<3, 3>(GlobalState::vel_, GlobalState::acc_) =
           -0.5 *
           (delta_q.toRotationMatrix() + result_delta_q.toRotationMatrix()) *
-          _dt;
+          _dt;// 中值积分
       F.block<3, 3>(GlobalState::vel_, GlobalState::gyr_) =
           -0.5 * result_delta_q.toRotationMatrix() * R_a_1_x * _dt * -_dt;
+
+      
+      F.block<3, 3>(GlobalState::att_, GlobalState::att_) =
+          Matrix3d::Identity() - R_w_x * _dt;
+      F.block<3, 3>(GlobalState::att_, GlobalState::gyr_) =
+          -1.0 * MatrixXd::Identity(3, 3) * _dt;    
 
       F.block<3, 3>(GlobalState::acc_, GlobalState::acc_) =
           Matrix3d::Identity();
       F.block<3, 3>(GlobalState::gyr_, GlobalState::gyr_) =
           Matrix3d::Identity();
-
+      // 对公式10中的状态转移矩阵进行累积，jacobian实际上是当前误差状态与初始误差状态之间的状态转移矩阵
       jacobian = F * jacobian;
     }
 
@@ -172,10 +178,8 @@ class IntegrationBase {
     Vector3d result_linearized_ba;
     Vector3d result_linearized_bg;
 
-    // 中值积分
-    // TODO:更新雅可比矩阵
-    // 返回值是新的delta，不会改变bias
-    // 返回的delta和输入的delta在同一坐标系下
+    // 预积分，推导新的状态，更新误差状态转移矩阵
+    // 状态都是指相对上一关键帧的
     midPointIntegration(_dt, acc_0, gyr_0, acc_1, _gyr_1, delta_p, delta_q,
                         delta_v, linearized_ba, linearized_bg, result_delta_p,
                         result_delta_q, result_delta_v, result_linearized_ba,
@@ -186,7 +190,7 @@ class IntegrationBase {
     delta_p = result_delta_p;
     delta_q = result_delta_q;
     delta_v = result_delta_v;
-    linearized_ba = result_linearized_ba;// TODO:直接返回的
+    linearized_ba = result_linearized_ba;// 直接返回的，并未更新
     linearized_bg = result_linearized_bg;
     delta_q.normalize();
     sum_dt += dt;
