@@ -133,6 +133,7 @@ class StatePredictor {
       gyr_last = gyr;
     }
 
+    // 以下的积分过程并未使用预积分，而是直接积分
     // Average acceleration and angular rate
     GlobalState state_tmp = state_;
     // 以下假设在相邻关键帧之间bias和重力g不变
@@ -145,7 +146,7 @@ class StatePredictor {
     V3D un_acc = 0.5 * (un_acc_0 + un_acc_1);
     // 以上完成了对a和g的中值求解
 
-    // 更新相对于上一关键帧的位置和姿态
+    // 更新相对于上一关键帧的位置和姿态，即对导航状态的更新
     // State integral
     state_tmp.rn_ = state_tmp.rn_ + dt * state_tmp.vn_ + 0.5 * dt * dt * un_acc;
     state_tmp.vn_ = state_tmp.vn_ + dt * un_acc;
@@ -182,13 +183,14 @@ class StatePredictor {
       F_ = I + Ft * dt + 0.5 * Ft * Ft * dt * dt;// 误差状态转移矩阵
 
       // 根据状态转移矩阵和输入矩阵，更新误差状态协方差
+      // 这里只对误差状态的方差进行了更新，因为误差状态的估计在预测中一直为0
       // jacobian_ = F * jacobian_;
       covariance_ =
           F_ * covariance_ * F_.transpose() + Gt * noise_ * Gt.transpose();
       covariance_ = 0.5 * (covariance_ + covariance_.transpose()).eval();// 保证对称性
     }
 
-    // 以上更新的是相对姿态，并计算了误差状态的状态转移矩阵，新的相对姿态误差协方差
+    // 以上更新的是相对姿态，并计算了误差状态的状态转移矩阵和相对姿态误差协方差
 
     state_ = state_tmp;
     time_ += dt;// 直到点云所在时刻
@@ -344,24 +346,24 @@ class StatePredictor {
       M3D gra_cov =
           covariance_.block<3, 3>(GlobalState::gra_, GlobalState::gra_);
       // 位姿和姿态要归零，所以误差协方差设置为定值
-      // 速度，重力可以传递过来，bias协方差不变
+      // 速度，重力可以从上一关键帧坐标系传递到当前关键帧坐标系下，bias是在IMU/车体坐标系下表示的，协方差不变
       covariance_.setZero();
       covariance_.block<3, 3>(GlobalState::pos_, GlobalState::pos_) =
-          covPos.asDiagonal();  // pos
+          covPos.asDiagonal();  // pos// 相对位置归零，因此这里方差可以设置的很小
       covariance_.block<3, 3>(GlobalState::vel_, GlobalState::vel_) =
-          state_.qbn_.inverse() * vel_cov * state_.qbn_;  // vel
+          state_.qbn_.inverse() * vel_cov * state_.qbn_;  // vel// 速度本来是在上一时刻关键帧坐标系下表示的，现在左乘一个相对姿态变换到当前关键帧坐标下，因此协方差左右各乘一个矩阵
       covariance_.block<3, 3>(GlobalState::att_, GlobalState::att_) =
-          V3D(covRoll, covPitch, covYaw).asDiagonal();  // att
-      covariance_.block<3, 3>(GlobalState::acc_, GlobalState::acc_) = acc_cov;
+          V3D(covRoll, covPitch, covYaw).asDiagonal();  // att// 相对姿态也归零
+      covariance_.block<3, 3>(GlobalState::acc_, GlobalState::acc_) = acc_cov;// 一直是在IMU/车体坐标系下的，不需要变
       covariance_.block<3, 3>(GlobalState::gyr_, GlobalState::gyr_) = gyr_cov;
       covariance_.block<3, 3>(GlobalState::gra_, GlobalState::gra_) =
-          state_.qbn_.inverse() * gra_cov * state_.qbn_;
+          state_.qbn_.inverse() * gra_cov * state_.qbn_;// 重力从上一关键帧转换到当前关键帧
 
-      state_.rn_.setZero();
-      state_.vn_ = state_.qbn_.inverse() * state_.vn_;
-      state_.qbn_.setIdentity();
-      state_.gn_ = state_.qbn_.inverse() * state_.gn_;
-      state_.gn_ = state_.gn_ * 9.81 / state_.gn_.norm();// 单位化
+      state_.rn_.setZero();// 归零
+      state_.vn_ = state_.qbn_.inverse() * state_.vn_;// 速度本来是在上一时刻关键帧坐标系下表示的，现在左乘一个相对姿态变换到当前关键帧坐标下
+      state_.qbn_.setIdentity();// 归零
+      state_.gn_ = state_.qbn_.inverse() * state_.gn_;// 重力从上一关键帧转换到当前关键帧
+      state_.gn_ = state_.gn_ * 9.81 / state_.gn_.norm();// 方向不变，模长规范化到9.81
       // initializeCovariance(1);
     }
   }
@@ -381,7 +383,7 @@ class StatePredictor {
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_>
       F_;
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_>
-      jacobian_, covariance_;// 误差状态协方差
+      jacobian_, covariance_;// 导航状态协方差矩阵
   Eigen::Matrix<double, GlobalState::DIM_OF_NOISE_, GlobalState::DIM_OF_NOISE_>
       noise_;
 

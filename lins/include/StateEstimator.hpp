@@ -244,13 +244,13 @@ class StateEstimator {
       case STATUS_INIT:
         break;
       case STATUS_FIRST_SCAN:
-        preintegration_->push_back(dt, acc, gyr);
-        filter_->time_ += dt;
+        preintegration_->push_back(dt, acc, gyr);// 导航状态预积分，误差状态转移矩阵累积
+        filter_->time_ += dt;// 预积分中预测当前位姿，相当于往前推动滤波器
         acc_0_ = acc;
         gyr_0_ = gyr;
         break;
       case STATUS_RUNNING:
-        filter_->predict(dt, acc, gyr, true);// 计算新的相对位姿，更新误差状态转移矩阵和协方差
+        filter_->predict(dt, acc, gyr, true);// 计算新的相对位姿，更新误差状态转移矩阵和误差状态协方差
         break;
       default:
         break;
@@ -287,7 +287,7 @@ class StateEstimator {
     calculateSmoothness(scan_new_);// 计算曲率
     markOccludedPoints(scan_new_);// 去掉易被遮挡点和噪点
     extractFeatures(scan_new_);// 提取特征，也保存在了scan中
-    imu_last_ = imu;
+    imu_last_ = imu;// scan后的第一个imu
     double time_fea = ts_fea.toc();
 
     TicToc ts_opt;  // Calculate the time used in state estimation
@@ -355,7 +355,8 @@ class StateEstimator {
     preintegration_ = new integration::IntegrationBase(
         imu_last_.acc, imu_last_.gyr, INIT_BA, INIT_BW);
 
-    // 初始化kalman滤波器的初始姿态、协方差和上一时刻imu测量（TODO:）
+    // 初始化kalman滤波器的初始姿态、协方差和上一时刻imu测量
+    // 时间被初始化为点云的时间戳
     // Initialize position, velocity, acceleration bias, gyroscope bias by zeros
     filter_->initialization(scan_new_->time_, V3D(0, 0, 0), V3D(0, 0, 0),
                             V3D(0, 0, 0), V3D(0, 0, 0), imu_last_.acc,
@@ -390,22 +391,22 @@ class StateEstimator {
     Q4D ql;
     V3D v0, v1, ba0, bw0;
     ba0.setZero();
-    ql = preintegration_->delta_q;// 第一帧激光之后，IMU在与积分器中积分的姿态
-    // 加速度的积分，包含了重力，需要去除
+    // 以下，通过预积分计算计算导航状态，即相对姿态和位置。其中由于当前帧为第2帧，认为第一帧v=0,每一帧的Ri都是单位阵
+    ql = preintegration_->delta_q;
     pl = preintegration_->delta_p +
          0.5 * linState_.gn_ * preintegration_->sum_dt *
              preintegration_->sum_dt -
-         0.5 * ba0 * preintegration_->sum_dt * preintegration_->sum_dt;// 假设两个关键帧之间的重力不变，这里减去重力加速度和bias(内部已经做了，这里设置为0)对位移的影响
-    // 上面的linState_.gn_应该是在上一时刻状态下的重力加速度
+         0.5 * ba0 * preintegration_->sum_dt * preintegration_->sum_dt;// linState_.gn_应该是在上一时刻状态下的重力加速度
     // 以上预测了相对姿态和位置，下面以此为初值计算点云相对位姿
-    estimateTransform(scan_last_, scan_new_, pl, ql);// 结果会覆盖在pl ql中
+    estimateTransform(scan_last_, scan_new_, pl, ql);// 点云匹配，结果会覆盖在pl ql中
 
     // Calculate initial state using relative transform calculated by point
     // clouds and that by IMU preintegration
-    estimateInitialState(pl, ql, v0, v1, ba0, bw0);// 根据相对位置和时间，计算状态量-速度v0v1
+    estimateInitialState(pl, ql, v0, v1, ba0, bw0);// 初始化速度
 
-    // 由于kalman的状态是相对位姿，因此只有获得了两帧后才能进行kalman的初始化
+    // !由于kalman的状态是相对位姿，因此只有获得了两帧后才能进行kalman的初始化
     // 这里主要是对相对位置和速度等进行了初始化（角度没有用点云匹配的结果，而是单位阵）
+    // ?但是在什么地方才转换到第二帧坐标系下，作为新的开始？
     // Initialize the Kalman filter by estimated values
     V3D r1 = pl;
     filter_->initialization(scan_new_->time_, r1, v1, ba0, bw0, imu_last_.acc,
@@ -418,8 +419,7 @@ class StateEstimator {
 
     // Initialize the global state, e.g., position, velocity, and orientation
     // represented in the original frame (the first-scan-frame)
-    // 初始化状态
-    // 即根据点云匹配计算出的相对位置和速度，静止估计出的roll和pitch（角度是全局的？），给定的bias
+    // 初始化状态，即根据点云匹配计算出的相对位置和速度，静止估计出的roll和pitch，给定的bias
     globalState_ = GlobalState(
         r1, v1, rpy2Quat(V3D(roll_init, pitch_init, yaw_init)), ba0, bw0);
 
@@ -448,14 +448,14 @@ class StateEstimator {
       return false;
     }
 
-    // 迭代对相对位置和误差状态协方差进行迭代更新，保存在linState_和Pk_中，并update到滤波器中
+    // 迭代更新位姿误差状态，最后更新位姿协方差，+到linState_和Pk_中，并update到滤波器中
     // Update states
     performIESKF();
     // 相对姿态累积成全局姿态
     // Update global transform by estimated relative transform
     integrateTransformation();
     // 当前最优的状态和方差估计都是相对于上一关键帧坐标系的，转换到当前位姿下
-    // 其中相对位姿会归零
+    // 其中相对位姿会归零，速度和重力跟关键帧坐标系有关，会转换到当前坐标系下，bias是在车体坐标系下的不变
     filter_->reset(1);
 
     // 根据滤波器得到的当前坐标系下重力的分量，重新计算roll和pitch，更新到全局姿态
@@ -464,7 +464,7 @@ class StateEstimator {
     // directly solve more accurate roll and pitch angles to correct the global
     // state
     calculateRPfromGravity(filter_->state_.gn_, roll, pitch);
-    correctRollPitch(roll, pitch);
+    correctRollPitch(roll, pitch);// 滤波器可以估计出来一个姿态，但是通过IMU的重力加速度的估计方向计算出更优的roll和pitch，用这个去修正那个
 
     // 点云校正到终止时刻，并对点云和绝对位姿进行坐标习惯变换
     // Undistort point cloud using estimated relative transform
@@ -477,7 +477,7 @@ class StateEstimator {
     return true;
   }
 
-  // 对相对姿态和误差状态协方差进行迭代更新，结果都是相对于上一关键帧的
+  // 迭代更新位姿误差，结果都是相对于上一关键帧的，也就是robocentric
   void performIESKF() {
     // Store current state and perform initialization
     Pk_ = filter_->covariance_;// 使用IMU一直更新的相对位姿误差协方差矩阵
@@ -540,7 +540,7 @@ class StateEstimator {
                      jacobians_->points[i].z);
         residual_(i) = LIDAR_SCALE * jacobians_->points[i].intensity;
         // TODO:以下求解雅可比的详细推导还没有搞清楚
-        // 在迭代的过程中linState_是一直被更新的量
+        // Hk是观测相对于误差状态的雅可比，与当前的状态有关，详见Sola式(278)
         Hk_.block<1, 3>(i, GlobalState::att_) =
             coff_xyz.transpose() *
             (-linState_.qbn_.toRotationMatrix() * skew(P2xyz)) *
@@ -562,15 +562,16 @@ class StateEstimator {
       Py_ =
           Hk_ * Pk_ * Hk_.transpose() + Rk_;  // S = H * P * H.transpose() + R;
       Pyinv_.setIdentity();                   // solve Ax=B
-      Py_.llt().solveInPlace(Pyinv_);// 求逆
+      Py_.llt().solveInPlace(Pyinv_);// Cholesky分解解方程，求逆，保存在Pyinv_
       Kk_ = Pk_ * Hk_.transpose() * Pyinv_;  // K = P*H.transpose()*S.inverse()
 
-      // TODO:计算相对位姿误差的预测量？
-      // linState_相当于是一直被更新的对相对姿态更好的估计。新状态与纯IMU预测filterState相比，之间的差就是对误差的估计（即预测应该被修正的量，一开始为0）
-      filterState.boxMinus(linState_, difVecLinInv_);// filterState是通过IMU对相对位姿的预测，difVecLinInv_是对误差状态的估计
-      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;// 对误差进行更新，对应论文公式（16-17）
-      // 以上对位姿误差状态进行了迭代更新
-      // 但是没有对误差状态协方差进行更新（在下面进行）
+      // ? 这部分来源于ROVIO，对误差状态进行迭代卡尔曼更新
+      // filterState是基于IMU对状态的预测，在迭代的过程中不会发生变化
+      // linState_相当于观测，随着迭代的进行，不断产生新的匹配，残差和雅可比
+      // difVecLinInv_是当前的误差状态，sigma_x
+      filterState.boxMinus(linState_, difVecLinInv_);
+      updateVec_ = -Kk_ * (residual_ + Hk_ * difVecLinInv_) + difVecLinInv_;// 对应论文公式（16-17），对误差状态进行更新
+      // 以上对位姿误差状态进行了迭代更新，但是没有对误差状态协方差进行更新（最后进行一次）
 
       // Divergence determination
       bool hasNaN = false;
@@ -621,7 +622,7 @@ class StateEstimator {
       IKH_ = Eigen::Matrix<double, 18, 18>::Identity() - Kk_ * Hk_;
       Pk_ = IKH_ * Pk_ * IKH_.transpose() + Kk_ * Rk_ * Kk_.transpose();// 对相对姿态误差协方差进行更新
       enforceSymmetry(Pk_);
-      filter_->update(linState_, Pk_);// 用迭代出来的最新位姿和误差方差更新滤波器，但是都是在上一关键帧坐标系下的
+      filter_->update(linState_, Pk_);// 用迭代出来的最新位姿和误差方差更新滤波器。这里说明真正的更新都是在这个函数里进行的，filter只是负责了保存
     }
   }
 
@@ -631,16 +632,18 @@ class StateEstimator {
   }
 
   // 对全局位置，姿态，速度，重力，bias进行更新，其中bias不涉及坐标系变换
+  // 论文中的全局位姿都是local<-global的形式，这里还是global<-local
   // Update the gloabl state by the new relative transformation
   void integrateTransformation() {
-    GlobalState filterState = filter_->state_;// 相对位姿状态
+    GlobalState filterState = filter_->state_;// 相对位姿状态。其实是在本estimator中更新的，只不过保存到了filter中。
     globalState_.rn_ = globalState_.qbn_ * filterState.rn_ + globalState_.rn_;
     globalState_.qbn_ = globalState_.qbn_ * filterState.qbn_;
     globalState_.vn_ =
-        globalState_.qbn_ * filterState.qbn_.inverse() * filterState.vn_;// 注意此时globalState_.qbn_已经更新到当前时刻了
+        globalState_.qbn_ * filterState.qbn_.inverse() * filterState.vn_;// 注意此时globalState_.qbn_已经更新到当前时刻了。结果是转换到世界坐标系下
     globalState_.ba_ = filterState.ba_;
     globalState_.bw_ = filterState.bw_;
-    globalState_.gn_ = globalState_.qbn_ * filterState.gn_;// TODO:这里应该缺一个filterState.qbn_.inverse()吧
+    globalState_.gn_ = globalState_.qbn_ * filterState.gn_;// ? gn应该还是在上一关键帧坐标系下的投影，因此这里应该在globalState_.qbn_被更新之前就计算吧？
+    // ? 重力在第一帧坐标系下的投影？
   }
 
   void undistortPcl(ScanPtr scan) {
@@ -1214,6 +1217,7 @@ class StateEstimator {
         continue;
       }
       // 没有用ceres而是构建方程求解变换
+      // 高斯牛顿求解，QR分解解方程，而且通过H矩阵判断是否出现退化
       if (calculateTransformation(lastScan, newScan, keypointCorns_,
                                   jacobianCoffCorns, keypointSurfs_,
                                   jacobianCoffSurfs, iter)) {
@@ -1243,7 +1247,7 @@ class StateEstimator {
     const int pointNum = keypoints_->points.size();
     const int imuNum = 0;
     const int row = pointNum + imuNum;
-    Eigen::Matrix<double, Eigen::Dynamic, stateNum> J(row, stateNum);
+    Eigen::Matrix<double, Eigen::Dynamic, stateNum> J(row, stateNum);// 行为残差项数，列为状态量维度
     Eigen::Matrix<double, stateNum, Eigen::Dynamic> JT(stateNum, row);
     Eigen::Matrix<double, stateNum, stateNum> JTJ;
     Eigen::VectorXd b(row);
@@ -1505,11 +1509,11 @@ class StateEstimator {
 
   // 全局位姿
   // !@Global transformation from the original scan-frame to current scan-frame
-  GlobalState globalState_;
+  GlobalState globalState_;// 全局位姿
   // !@Relative transformation from scan0-frame t0 scan1-frame
-  GlobalState linState_;// 点云匹配中的优化变量
+  GlobalState linState_;// 点云匹配中的优化变量// 相对位置，即在上一关键帧坐标系中的位姿，导航状态
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, 1> difVecLinInv_;
-  Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, 1> updateVec_;
+  Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, 1> updateVec_;// 误差状态
   double updateVecNorm_ = 0.0;
 
   // !@Kalman filter relatives

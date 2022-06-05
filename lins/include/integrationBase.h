@@ -68,21 +68,21 @@ class IntegrationBase {
       Eigen::Quaterniond &result_delta_q, Eigen::Vector3d &result_delta_v,
       Eigen::Vector3d &result_linearized_ba,
       Eigen::Vector3d &result_linearized_bg, bool update_jacobian) {
-    // 推导相对上一关键帧的位姿    
-    Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);// 上一时刻的加速度转换到上一关键帧
-    Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;// 角速度的中值
+    // 以下是预积分的过程。很明显的一点在于，加速度中的g并没有去掉直接积分。  
+    Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
+    Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
     result_delta_q =
         delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2,
                               un_gyr(2) * _dt / 2);// TODO:假设theta很小所做的近似
-    Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);// 转换到上一关键帧
-    Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);// 在参考系下加速度的均值，不含bias，包含了重力
-    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;// 相对于上一关键帧
+    Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
+    Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
+    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
     result_delta_v = delta_v + un_acc * _dt;
 
     result_linearized_ba = linearized_ba;
     result_linearized_bg = linearized_bg;
 
-    // 推导相对于上一关键帧的误差状态转移矩阵
+    // 推导相对于上一关键帧的误差状态转移矩阵。这部分恰好只跟预积分的姿态部分有关
     // 以下对应论文中的公式6-11
     if (update_jacobian) {
       // 对应公式8-9
@@ -178,8 +178,8 @@ class IntegrationBase {
     Vector3d result_linearized_ba;
     Vector3d result_linearized_bg;
 
-    // 预积分，推导新的状态，更新误差状态转移矩阵
-    // 状态都是指相对上一关键帧的
+    // 1)对导航状态预积分，没有最终计算出导航状态（当然本文讨论的都是在robocentric的）
+    // 2)更新误差状态转移矩阵，这是关于误差状态的
     midPointIntegration(_dt, acc_0, gyr_0, acc_1, _gyr_1, delta_p, delta_q,
                         delta_v, linearized_ba, linearized_bg, result_delta_p,
                         result_delta_q, result_delta_v, result_linearized_ba,
@@ -187,7 +187,7 @@ class IntegrationBase {
 
     // checkJacobian(_dt, acc_0, gyr_0, acc_1, gyr_1, delta_p, delta_q, delta_v,
     //                    linearized_ba, linearized_bg);
-    delta_p = result_delta_p;
+    delta_p = result_delta_p;// 预积分结果
     delta_q = result_delta_q;
     delta_v = result_delta_v;
     linearized_ba = result_linearized_ba;// 直接返回的，并未更新
@@ -211,7 +211,7 @@ class IntegrationBase {
   const Eigen::Vector3d linearized_acc, linearized_gyr;
   Eigen::Vector3d linearized_ba, linearized_bg;
 
-  Eigen::Matrix<double, 15, 15> jacobian, covariance;
+  Eigen::Matrix<double, 15, 15> jacobian, covariance;// jacobian为累积的状态转移矩阵
   Eigen::Matrix<double, 15, 15> step_jacobian;
   Eigen::Matrix<double, 15, 18> step_V;
   Eigen::Matrix<double, 18, 18> noise;

@@ -38,7 +38,7 @@ void LinsFusion::initialization() {
   subImu = pnh_.subscribe<sensor_msgs::Imu>(IMU_TOPIC, 100,
                                             &LinsFusion::imuCallback, this);// 主要的内容
   subLaserCloud = pnh_.subscribe<sensor_msgs::PointCloud2>(
-      "/segmented_cloud", 2, &LinsFusion::laserCloudCallback, this);// 缓存在map中
+      "/segmented_cloud", 2, &LinsFusion::laserCloudCallback, this);// 缓存在自己构建的有一定大小的环形数组中
   subLaserCloudInfo = pnh_.subscribe<cloud_msgs::cloud_info>(
       "/segmented_cloud_info", 2, &LinsFusion::laserCloudInfoCallback, this);
   subOutlierCloud = pnh_.subscribe<sensor_msgs::PointCloud2>(
@@ -132,14 +132,14 @@ void LinsFusion::imuCallback(const sensor_msgs::Imu::ConstPtr& imuMsg) {
   misalign_euler_angles_ << deg2rad(0.0), deg2rad(0.0),
       deg2rad(IMU_MISALIGN_ANGLE);// 从IMU坐标系转换到车体坐标系
   alignIMUtoVehicle(misalign_euler_angles_, acc_raw_, gyr_raw_, acc_aligned_,
-                    gyr_aligned_);// 把测量从IMU坐标系转换到车体坐标系
+                    gyr_aligned_);// 把测量从IMU坐标系转换到车体坐标系。IMU和车体在yaw上存在偏角，把测量转换到车体坐标系下。
 
   // Add a new IMU measurement
   Imu imu(imuMsg->header.stamp.toSec(), acc_aligned_, gyr_aligned_);
   imuBuf_.addMeas(imu, imuMsg->header.stamp.toSec());// 测量增加到buffer（有的数据可能来不及处理而被直接删掉）
 
   // Trigger the Kalman filter
-  performStateEstimation();
+  performStateEstimation();// 真正推动状态估计
 }
 
 void LinsFusion::processFirstPointCloud() {
@@ -169,7 +169,9 @@ void LinsFusion::processFirstPointCloud() {
                         outlierPointCloud);// 既有成员共享指针的拷贝，也有深拷贝
 
   // Clear all the PCLs before the initialization PCL
-  pclBuf_.clean(estimator->getTime());// 在回调中push操作时也可能有pop的操作，这里在处理的时候也会进行pop
+  // 在回调中push操作时也可能有pop的操作，这里在处理的时候也会进行pop
+  // estimator的时间戳变为点云的时间戳
+  pclBuf_.clean(estimator->getTime());
   cloudInfoBuf_.clean(estimator->getTime());
   outlierBuf_.clean(estimator->getTime());
 }
@@ -236,11 +238,12 @@ bool LinsFusion::processPointClouds() {
          (imuBuf_.itMeas_ = imuBuf_.measMap_.upper_bound(
               estimator->getTime())) != imuBuf_.measMap_.end()) {
     // 积分时长从上一时刻开始，到imu和点云中的较小时刻为止
-    // 因此，跨点云的imu消息会被两次积分
+    // estimator还没有被积分到scan_time_，且下一个imu的时间戳比scan_time_更大，则下一imu的积分周期至scan_time_截止
+    // 且从imu buffer中清理数据也是以scan time为界的，该帧imu不会被清理掉
     double dt =
         std::min(imuBuf_.itMeas_->first, scan_time_) - estimator->getTime();
     Imu imu = imuBuf_.itMeas_->second;
-    estimator->processImu(dt, imu.acc, imu.gyr);// 车体坐标系下的imu
+    estimator->processImu(dt, imu.acc, imu.gyr);// 车体坐标系下的imu。导航状态预积分，误差状态转移矩阵累积。
   }// 到这里把状态推到了scan_time_之后
   // 以上，利用IMU数据预测了相对于上一关键帧的位姿。计算了误差状态的状态转移矩阵
 
@@ -263,10 +266,10 @@ bool LinsFusion::processPointClouds() {
 
 // 每次IMU的回调函数中都会尝试执行
 void LinsFusion::performStateEstimation() {
-  // 需要IMU和点云数据都具备才会执行
+  // 需要IMU和点云数据都具备才会执行。即接受到点云后，再接收到一个IMU数据，才会继续向下执行
   if (imuBuf_.empty() || pclBuf_.empty() || cloudInfoBuf_.empty() ||
       outlierBuf_.empty())
-    return;// 有一个条件不满足都会返回
+    return;
   
   if (!estimator->isInitialized()) {
     processFirstPointCloud();
@@ -274,7 +277,8 @@ void LinsFusion::performStateEstimation() {
   }
 
   // Iterate all PCL measurements in the buffer
-  pclBuf_.getLastTime(last_scan_time_);// 存在至少一帧新激光，那么estimator需要被更新。在处理的过程中可能收到新的点云，但不会被处理
+  // 存在至少一帧新激光，那么estimator需要被更新。在处理的过程中可能会继续收到新的点云，但不会在while中被处理
+  pclBuf_.getLastTime(last_scan_time_);
   while (!pclBuf_.empty() && estimator->getTime() < last_scan_time_) { 
     TicToc ts_total;
     if (!processPointClouds()) break;// 对一组IMU和点云信息进行处理
