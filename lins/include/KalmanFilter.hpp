@@ -122,6 +122,7 @@ class StatePredictor {
 
   ~StatePredictor() {}
 
+  // 计算新的相对位姿，更新误差状态转移矩阵和协方差
   bool predict(double dt, const V3D& acc, const V3D& gyr,
                bool update_jacobian_ = true) {
     if (!isInitialized()) return false;// 是否已经有了初始状态，即初始化了一个相对位姿
@@ -136,7 +137,7 @@ class StatePredictor {
     GlobalState state_tmp = state_;
     // 以下假设在相邻关键帧之间bias和重力g不变
     // state_tmp.gn_重力也是在上一关键帧坐标系下的
-    V3D un_acc_0 = state_tmp.qbn_ * (acc_last - state_tmp.ba_) + state_tmp.gn_;// 都是相对于上一关键帧的
+    V3D un_acc_0 = state_tmp.qbn_ * (acc_last - state_tmp.ba_) + state_tmp.gn_;// 去掉bias和重力的加速度
     V3D un_gyr = 0.5 * (gyr_last + gyr) - state_tmp.bw_;
     Q4D dq = axis2Quat(un_gyr * dt);
     state_tmp.qbn_ = (state_tmp.qbn_ * dq).normalized();
@@ -149,6 +150,8 @@ class StatePredictor {
     state_tmp.rn_ = state_tmp.rn_ + dt * state_tmp.vn_ + 0.5 * dt * dt * un_acc;
     state_tmp.vn_ = state_tmp.vn_ + dt * un_acc;
 
+    // 更新误差状态转移矩阵和误差状态协方差
+    // 对应论文公式6-11
     if (update_jacobian_) {
       // 对应论文公式(6)
       MXD Ft =
@@ -176,16 +179,19 @@ class StatePredictor {
 
       const MXD I =
           MXD::Identity(GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_);
-      F_ = I + Ft * dt + 0.5 * Ft * Ft * dt * dt;
+      F_ = I + Ft * dt + 0.5 * Ft * Ft * dt * dt;// 误差状态转移矩阵
 
+      // 根据状态转移矩阵和输入矩阵，更新误差状态协方差
       // jacobian_ = F * jacobian_;
       covariance_ =
           F_ * covariance_ * F_.transpose() + Gt * noise_ * Gt.transpose();
-      covariance_ = 0.5 * (covariance_ + covariance_.transpose()).eval();
+      covariance_ = 0.5 * (covariance_ + covariance_.transpose()).eval();// 保证对称性
     }
 
+    // 以上更新的是相对姿态，并计算了误差状态的状态转移矩阵，新的相对姿态误差协方差
+
     state_ = state_tmp;
-    time_ += dt;
+    time_ += dt;// 直到点云所在时刻
     acc_last = acc;
     gyr_last = gyr;
     return true;
@@ -201,8 +207,8 @@ class StatePredictor {
   void update(const GlobalState& state,
               const Eigen::Matrix<double, GlobalState::DIM_OF_STATE_,
                                   GlobalState::DIM_OF_STATE_>& covariance) {
-    state_ = state;// 用迭代后的相对位姿更新滤波器里保存的相对位姿，TODO:怎么用？
-    covariance_ = covariance;// 更新协方差
+    state_ = state;
+    covariance_ = covariance;
   }
 
   void initialization(double time, const V3D& rn, const V3D& vn, const Q4D& qbn,
@@ -337,26 +343,25 @@ class StatePredictor {
           covariance_.block<3, 3>(GlobalState::gyr_, GlobalState::gyr_);
       M3D gra_cov =
           covariance_.block<3, 3>(GlobalState::gra_, GlobalState::gra_);
-
+      // 位姿和姿态要归零，所以误差协方差设置为定值
+      // 速度，重力可以传递过来，bias协方差不变
       covariance_.setZero();
       covariance_.block<3, 3>(GlobalState::pos_, GlobalState::pos_) =
-          covPos.asDiagonal();  // pos 位置和速度协方差初始化
+          covPos.asDiagonal();  // pos
       covariance_.block<3, 3>(GlobalState::vel_, GlobalState::vel_) =
-          state_.qbn_.inverse() * vel_cov * state_.qbn_;  // vel 速度协方差传递
+          state_.qbn_.inverse() * vel_cov * state_.qbn_;  // vel
       covariance_.block<3, 3>(GlobalState::att_, GlobalState::att_) =
           V3D(covRoll, covPitch, covYaw).asDiagonal();  // att
       covariance_.block<3, 3>(GlobalState::acc_, GlobalState::acc_) = acc_cov;
       covariance_.block<3, 3>(GlobalState::gyr_, GlobalState::gyr_) = gyr_cov;
       covariance_.block<3, 3>(GlobalState::gra_, GlobalState::gra_) =
-          state_.qbn_.inverse() * gra_cov * state_.qbn_;// 重力协方差传递
+          state_.qbn_.inverse() * gra_cov * state_.qbn_;
 
       state_.rn_.setZero();
       state_.vn_ = state_.qbn_.inverse() * state_.vn_;
       state_.qbn_.setIdentity();
       state_.gn_ = state_.qbn_.inverse() * state_.gn_;
-      state_.gn_ = state_.gn_ * 9.81 / state_.gn_.norm();// 对重力做归一化，保证大小为9.81
-      // 以上，对相对位置和姿态归零，速度和重力保留但是转换到当前时刻姿态下，bias不变
-      // 相应的，位置和姿态的协方差初始化，速度和重力的协方差传递，bias方差不变
+      state_.gn_ = state_.gn_ * 9.81 / state_.gn_.norm();// 单位化
       // initializeCovariance(1);
     }
   }
@@ -371,12 +376,12 @@ class StatePredictor {
 
   inline bool isInitialized() { return flag_init_state_; }
 
-  GlobalState state_;// 绝对是两帧之间的相对位姿
+  GlobalState state_;// 相对于上一关键帧的位姿
   double time_;
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_>
       F_;
   Eigen::Matrix<double, GlobalState::DIM_OF_STATE_, GlobalState::DIM_OF_STATE_>
-      jacobian_, covariance_;
+      jacobian_, covariance_;// 误差状态协方差
   Eigen::Matrix<double, GlobalState::DIM_OF_NOISE_, GlobalState::DIM_OF_NOISE_>
       noise_;
 
